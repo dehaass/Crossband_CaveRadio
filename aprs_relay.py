@@ -11,6 +11,8 @@ Example::
 
 import argparse
 import socket
+import re
+import time
 
 
 KISS_FEND = 0xC0
@@ -20,6 +22,7 @@ KISS_TFESC = 0xDD
 KISS_DATA_FRAME = 0x00
 DEFAULT_KISS_HOST = "127.0.0.1"
 DEFAULT_KISS_PORT = 8001
+DEFAULT_LISTEN_SECONDS = 30
 
 
 def parse_callsign(value):
@@ -77,6 +80,99 @@ def kiss_encode(frame):
 	return bytes((KISS_FEND, KISS_DATA_FRAME)) + escaped + bytes((KISS_FEND,))
 
 
+class KissDecoder:
+	"""Decode a stream of KISS TCP bytes into AX.25 frames."""
+
+	def __init__(self):
+		self._frame = bytearray()
+		self._escaped = False
+
+	def feed(self, data):
+		frames = []
+		for byte in data:
+			if byte == KISS_FEND:
+				if self._frame and self._frame[0] == KISS_DATA_FRAME:
+					frames.append(bytes(self._frame[1:]))
+				self._frame.clear()
+				self._escaped = False
+				continue
+			if not self._frame and byte != KISS_DATA_FRAME:
+				continue
+			if self._escaped:
+				if byte == KISS_TFEND:
+					self._frame.append(KISS_FEND)
+				elif byte == KISS_TFESC:
+					self._frame.append(KISS_FESC)
+				else:
+					self._frame.clear()
+				self._escaped = False
+			elif byte == KISS_FESC:
+				self._escaped = True
+			else:
+				self._frame.append(byte)
+		return frames
+
+
+def decode_ax25_ui_frame(frame):
+	"""Return AX.25 addresses and APRS information from a UI frame."""
+	addresses = []
+	position = 0
+	while position + 7 <= len(frame):
+		address_bytes = frame[position:position + 7]
+		callsign = bytes(value >> 1 for value in address_bytes[:6]).decode("ascii").rstrip()
+		ssid = (address_bytes[6] >> 1) & 0x0F
+		addresses.append(callsign + (f"-{ssid}" if ssid else ""))
+		position += 7
+		if address_bytes[6] & 0x01:
+			break
+	if not addresses or position + 2 > len(frame):
+		raise ValueError("Incomplete AX.25 UI frame")
+	if frame[position:position + 2] != b"\x03\xF0":
+		raise ValueError("Unsupported AX.25 frame control/PID")
+	info = frame[position + 2:].decode("ascii", errors="replace")
+	return addresses, info
+
+
+def parse_aprs_information(info):
+	"""Classify an APRS information field as a message, ACK, or other packet."""
+	if not info.startswith(":") or len(info) < 11 or info[10] != ":":
+		return {"type": "other", "text": info}
+	addressee = info[1:10].strip()
+	text = info[11:]
+	ack_match = re.fullmatch(r"(ack|rej)([0-9]{1,3})", text)
+	if ack_match:
+		return {"type": ack_match.group(1), "from": addressee, "message_id": ack_match.group(2)}
+	message_match = re.fullmatch(r"(.*?)(?:\{([0-9]{1,3}))?", text)
+	return {
+		"type": "message",
+		"to": addressee,
+		"message": message_match.group(1),
+		"message_id": message_match.group(2),
+	}
+
+
+def receive_aprs_frames(connection, listen_seconds):
+	"""Receive and print decoded APRS frames until timeout or socket close."""
+	decoder = KissDecoder()
+	connection.settimeout(1.0)
+	deadline = time.monotonic() + listen_seconds
+	while time.monotonic() < deadline:
+		try:
+			data = connection.recv(4096)
+		except socket.timeout:
+			continue
+		if not data:
+			break
+		for frame in decoder.feed(data):
+			try:
+				addresses, info = decode_ax25_ui_frame(frame)
+				parsed = parse_aprs_information(info)
+			except ValueError as error:
+				print(f"Received undecoded frame: {error}")
+				continue
+			print(f"Received {addresses[1] if len(addresses) > 1 else addresses[0]} -> {parsed}")
+
+
 def send_aprs_message(host, port, source, destination, message, path, message_id=None):
 	"""Connect to Dire Wolf's KISS listener and transmit one APRS message."""
 	info = aprs_message_info(destination, message, message_id)
@@ -89,21 +185,31 @@ def send_aprs_message(host, port, source, destination, message, path, message_id
 
 def main():
 	parser = argparse.ArgumentParser(description="Send one APRS message through Dire Wolf KISS TCP")
-	parser.add_argument("--source", required=True, help="Your station callsign, optionally with SSID")
-	parser.add_argument("--destination", required=True, help="APRS recipient callsign, optionally with SSID")
-	parser.add_argument("--message", required=True, help="Message text, up to 67 characters")
+	parser.add_argument("--source", help="Your station callsign, optionally with SSID")
+	parser.add_argument("--destination", help="APRS recipient callsign, optionally with SSID")
+	parser.add_argument("--message", help="Message text, up to 67 characters")
 	parser.add_argument("--message-id", help="Optional APRS message ID, 1 to 3 digits")
 	parser.add_argument("--path", default="", help="Comma-separated digipeater path, e.g. WIDE1-1,WIDE2-1")
+	parser.add_argument("--listen-seconds", type=float, default=DEFAULT_LISTEN_SECONDS, help="Seconds to listen for incoming APRS packets after transmitting")
+	parser.add_argument("--receive-only", action="store_true", help="Listen without transmitting a message")
 	parser.add_argument("--host", default=DEFAULT_KISS_HOST)
 	parser.add_argument("--port", type=int, default=DEFAULT_KISS_PORT)
 	args = parser.parse_args()
+	if not args.receive_only and not all((args.source, args.destination, args.message)):
+		parser.error("--source, --destination, and --message are required unless --receive-only is used")
+	if args.receive_only and not args.source:
+		args.source = "N0CALL"
 
 	path = [item.strip() for item in args.path.split(",") if item.strip()]
-	packet = send_aprs_message(
-		args.host, args.port, args.source, args.destination,
-		args.message, path, args.message_id,
-	)
-	print(f"Sent {len(packet)} KISS bytes to {args.host}:{args.port}")
+	with socket.create_connection((args.host, args.port), timeout=10) as connection:
+		if not args.receive_only:
+			info = aprs_message_info(args.destination, args.message, args.message_id)
+			frame = ax25_ui_frame(args.source, "APRS", path, info)
+			packet = kiss_encode(frame)
+			connection.sendall(packet)
+			print(f"Sent {len(packet)} KISS bytes to {args.host}:{args.port}")
+		print(f"Listening for APRS packets for {args.listen_seconds:g} seconds...")
+		receive_aprs_frames(connection, args.listen_seconds)
 
 
 if __name__ == "__main__":
