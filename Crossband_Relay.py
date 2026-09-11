@@ -31,6 +31,7 @@ FLDIGI_MODEM = "THOR4"
 KISS_HOSTNAME = "127.0.0.1"
 KISS_PORT = 8001
 POLL_INTERVAL_SECONDS = 0.5
+HEALTH_INTERVAL_SECONDS = 30
 TRAFFIC_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "messages.jsonl")
 
 
@@ -52,21 +53,20 @@ def write_traffic_log(entry, log, received_at=None):
 
 
 def radio_msg_to_aprs_text(message):
-    """Represent a RadioMSG block as one APRS-compatible line."""
-    text = " ".join(message.raw.splitlines())
-    if len(text) > 67:
-        raise ValueError(
-            f"RadioMSG is {len(text)} characters; APRS messages support at most 67"
-        )
-    return text
+    """Represent a RadioMSG block as one line for APRS segmentation."""
+    return " ".join(message.raw.splitlines())
 
 
 class CrossbandRelay:
     """Run the Fldigi receiver and APRS service together."""
 
-    def __init__(self):
+    def __init__(self, power_cycle_hook=None):
         self.log = logging.getLogger("Crossband_Relay")
         self._stop_event = threading.Event()
+        self._monitor_thread = None
+        self._fldigi_last_ok = None
+        self._fldigi_last_error = None
+        self._power_cycle_hook = power_cycle_hook
         self._radio_parser = RadioMsgParser()
         self._fldigi = None
         self._aprs = AprsService(
@@ -79,6 +79,7 @@ class CrossbandRelay:
         )
 
     def start(self):
+        self._stop_event.clear()
         self.log.info("Starting APRS service")
         self._aprs.start()
 
@@ -88,6 +89,74 @@ class CrossbandRelay:
         if self._fldigi.modem.name != FLDIGI_MODEM:
             self.log.info("Switching Fldigi modem to %s", FLDIGI_MODEM)
             self._fldigi.modem.name = FLDIGI_MODEM
+        self._fldigi_last_ok = time.time()
+        self._fldigi_last_error = None
+        if self._monitor_thread is None or not self._monitor_thread.is_alive():
+            self._monitor_thread = threading.Thread(
+                target=self._health_monitor_loop,
+                name="relay-health",
+                daemon=True,
+            )
+            self._monitor_thread.start()
+
+    def health_snapshot(self):
+        """Return current APRS, Fldigi, and relay health state."""
+        fldigi = {
+            "connected": self._fldigi is not None,
+            "last_ok": self._fldigi_last_ok,
+            "last_error": self._fldigi_last_error,
+        }
+        if self._fldigi is not None:
+            try:
+                fldigi["status"] = self._fldigi.main.status1
+                fldigi["healthy"] = True
+            except Exception as error:
+                fldigi["healthy"] = False
+                fldigi["last_error"] = str(error)
+        else:
+            fldigi["healthy"] = False
+        return {
+            "healthy": fldigi["healthy"] and self._aprs.connected and self._aprs.running,
+            "fldigi": fldigi,
+            "aprs": self._aprs.health_snapshot(),
+        }
+
+    def power_cycle(self, subsystem):
+        """Invoke the configured hardware power-cycle hook for a subsystem."""
+        if self._power_cycle_hook is None:
+            raise RuntimeError("No power_cycle_hook is configured")
+        if subsystem not in {"fldigi", "aprs", "radio"}:
+            raise ValueError("subsystem must be fldigi, aprs, or radio")
+        self._power_cycle_hook(subsystem)
+
+    def _health_monitor_loop(self):
+        while not self._stop_event.wait(HEALTH_INTERVAL_SECONDS):
+            snapshot = self.health_snapshot()
+            self.log.info("Health: %s", snapshot)
+            if not snapshot["aprs"]["connected"] or not snapshot["aprs"]["running"]:
+                self._restart_aprs()
+            if not snapshot["fldigi"]["healthy"]:
+                self._restart_fldigi()
+
+    def _restart_aprs(self):
+        self.log.warning("Restarting APRS KISS connection")
+        try:
+            self._aprs.stop()
+            self._aprs.start()
+        except (OSError, RuntimeError) as error:
+            self.log.error("Unable to restart APRS: %s", error)
+
+    def _restart_fldigi(self):
+        self.log.warning("Restarting Fldigi XML-RPC connection")
+        try:
+            self._fldigi = pyfldigi.Client(hostname=FLDIGI_HOSTNAME, port=FLDIGI_PORT)
+            if self._fldigi.modem.name != FLDIGI_MODEM:
+                self._fldigi.modem.name = FLDIGI_MODEM
+            self._fldigi_last_ok = time.time()
+            self._fldigi_last_error = None
+        except Exception as error:
+            self._fldigi_last_error = str(error)
+            self.log.error("Unable to restart Fldigi: %s", error)
 
     def run(self):
         """Poll Fldigi until stop() or Ctrl+C is requested."""
@@ -97,6 +166,7 @@ class CrossbandRelay:
         try:
             while not self._stop_event.is_set():
                 rx_data = self._fldigi.text.get_rx_data()
+                self._fldigi_last_ok = time.time()
                 if rx_data:
                     if isinstance(rx_data, bytes):
                         rx_data = rx_data.decode("utf-8", errors="replace")
@@ -112,6 +182,9 @@ class CrossbandRelay:
     def stop(self):
         self._stop_event.set()
         self._aprs.stop()
+        if self._monitor_thread is not None and self._monitor_thread is not threading.current_thread():
+            self._monitor_thread.join(timeout=2)
+        self._monitor_thread = None
 
     def _handle_radio_message(self, message):
         log_entry = dataclasses.asdict(message)
@@ -184,6 +257,35 @@ class CrossbandRelay:
             return
 
         command = parsed.get("message", "").strip()
+        if command in {"?", "? -v"}:
+            snapshot = self.health_snapshot()
+            aprs_healthy = snapshot["aprs"]["connected"] and snapshot["aprs"]["running"]
+            fldigi_healthy = snapshot["fldigi"]["healthy"]
+            if command == "? -v":
+                response = json.dumps(snapshot, separators=(",", ":"), sort_keys=True)
+            else:
+                response = f"APRS:{'OK' if aprs_healthy else 'FAIL'} Fldigi:{'OK' if fldigi_healthy else 'FAIL'}"
+            try:
+                self._aprs.send_message(
+                    APRS_DESTINATION_CALLSIGN,
+                    response,
+                    message_id=parsed.get("message_id"),
+                )
+            except (RuntimeError, OSError, ValueError) as error:
+                self.log.error("Unable to send APRS health response: %s", error)
+                return
+            self.log.info("Returned health status to APRS %s: %s", APRS_DESTINATION_CALLSIGN, response)
+            write_traffic_log(
+                {
+                    "transport": "aprs",
+                    "destination": APRS_DESTINATION_CALLSIGN,
+                    "command": command,
+                    "message": response,
+                },
+                self.log,
+            )
+            return
+
         command_match = re.fullmatch(r"msg\s+([1-9][0-9]*)", command, re.IGNORECASE)
         if command_match is None:
             return
@@ -193,13 +295,7 @@ class CrossbandRelay:
         if message is None:
             response = f"No Fldigi message {message_number} is available"
         else:
-            try:
-                response = " ".join(message["raw"].splitlines())
-                if len(response) > 67:
-                    raise ValueError("message is too long for APRS")
-            except ValueError as error:
-                self.log.warning("Cannot return Fldigi message %d: %s", message_number, error)
-                response = f"Fldigi message {message_number} is too long for APRS"
+            response = " ".join(message["raw"].splitlines())
 
         try:
             self._aprs.send_message(

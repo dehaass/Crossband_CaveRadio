@@ -24,6 +24,7 @@ KISS_DATA_FRAME = 0x00
 DEFAULT_KISS_HOST = "127.0.0.1"
 DEFAULT_KISS_PORT = 8001
 DEFAULT_LISTEN_SECONDS = 30
+APRS_MESSAGE_MAX_LENGTH = 67
 
 
 def parse_callsign(value):
@@ -54,14 +55,41 @@ def aprs_message_info(destination, message, message_id=None):
 		destination_text += f"-{destination_ssid}"
 	if len(destination_text) > 9:
 		raise ValueError("APRS message addressee must fit in 9 characters")
-	if len(message) > 67:
-		raise ValueError("APRS message text must be 67 characters or fewer")
-	info = f":{destination_text:<9}:{message}"
+	id_suffix = ""
 	if message_id is not None:
 		if not message_id.isdigit() or not 1 <= len(message_id) <= 3:
 			raise ValueError("APRS message ID must contain 1 to 3 digits")
-		info += "{" + message_id
+		id_suffix = "{" + message_id
+	if len(message) + len(id_suffix) > APRS_MESSAGE_MAX_LENGTH:
+		raise ValueError("APRS message text and ID must fit in 67 characters")
+	info = f":{destination_text:<9}:{message}"
+	info += id_suffix
 	return info.encode("ascii")
+
+
+def split_aprs_message(message, message_id=None):
+	"""Split text into APRS-sized numbered segments when necessary."""
+	id_length = 0 if message_id is None else len(str(message_id)) + 1
+	if id_length and (not str(message_id).isdigit() or not 1 <= len(str(message_id)) <= 3):
+		raise ValueError("APRS message ID must contain 1 to 3 digits")
+	if len(message) + id_length <= APRS_MESSAGE_MAX_LENGTH:
+		return [message]
+
+	segment_count = 1
+	while True:
+		prefix_length = len(f"({segment_count}/{segment_count}) ")
+		chunk_size = APRS_MESSAGE_MAX_LENGTH - id_length - prefix_length
+		if chunk_size <= 0:
+			raise ValueError("APRS message ID leaves no room for segmented text")
+		new_count = (len(message) + chunk_size - 1) // chunk_size
+		if new_count == segment_count:
+			break
+		segment_count = new_count
+
+	return [
+		f"({index}/{segment_count}) {message[offset:offset + chunk_size]}"
+		for index, offset in enumerate(range(0, len(message), chunk_size), start=1)
+	]
 
 
 def ax25_ui_frame(source, destination, path, info):
@@ -176,11 +204,31 @@ class AprsService:
 		self._thread = None
 		self._stop_event = threading.Event()
 		self._send_lock = threading.Lock()
+		self._started_at = None
+		self._last_packet_at = None
+		self._last_error = None
 
 	@property
 	def running(self):
 		"""Whether the background receive loop is active."""
 		return self._thread is not None and self._thread.is_alive()
+
+	@property
+	def connected(self):
+		"""Whether the KISS socket is currently open."""
+		return self._connection is not None
+
+	def health_snapshot(self):
+		"""Return connection state suitable for monitoring or health logging."""
+		return {
+			"running": self.running,
+			"connected": self.connected,
+			"host": self.host,
+			"port": self.port,
+			"started_at": self._started_at,
+			"last_packet_at": self._last_packet_at,
+			"last_error": self._last_error,
+		}
 
 	def start(self):
 		"""Connect to Dire Wolf and start receiving packets."""
@@ -189,13 +237,17 @@ class AprsService:
 		self._connection = socket.create_connection((self.host, self.port), timeout=10)
 		self._connection.settimeout(1.0)
 		self._stop_event.clear()
+		self._started_at = time.time()
+		self._last_error = None
 		self._thread = threading.Thread(target=self._receive_loop, name="aprs-receive", daemon=True)
 		self._thread.start()
 
 	def send_message(self, destination, message, message_id=None):
-		"""Transmit one addressed APRS message through the active connection."""
-		info = aprs_message_info(destination, message, message_id)
-		return self._send_info(info)
+		"""Transmit one addressed APRS message, segmented when necessary."""
+		packets = []
+		for segment in split_aprs_message(message, message_id):
+			packets.append(self._send_info(aprs_message_info(destination, segment, message_id)))
+		return packets
 
 	def send_ack(self, destination, message_id):
 		"""Transmit an APRS acknowledgement for a received message ID."""
@@ -279,9 +331,11 @@ class AprsService:
 			except (RuntimeError, OSError, ValueError) as error:
 				self._report_error(error)
 		if self.on_packet is not None:
+			self._last_packet_at = time.time()
 			self.on_packet(packet)
 
 	def _report_error(self, error):
+		self._last_error = str(error)
 		if self.on_error is not None:
 			self.on_error(error)
 
@@ -309,13 +363,15 @@ def receive_aprs_frames(connection, listen_seconds):
 
 
 def send_aprs_message(host, port, source, destination, message, path, message_id=None):
-	"""Connect to Dire Wolf's KISS listener and transmit one APRS message."""
-	info = aprs_message_info(destination, message, message_id)
-	frame = ax25_ui_frame(source, "APRS", path, info)
-	packet = kiss_encode(frame)
+	"""Connect to Dire Wolf and transmit an APRS message, segmented if needed."""
+	packets = []
 	with socket.create_connection((host, port), timeout=10) as connection:
-		connection.sendall(packet)
-	return packet
+		for segment in split_aprs_message(message, message_id):
+			info = aprs_message_info(destination, segment, message_id)
+			packet = kiss_encode(ax25_ui_frame(source, "APRS", path, info))
+			connection.sendall(packet)
+			packets.append(packet)
+	return packets
 
 
 def main():
@@ -338,11 +394,13 @@ def main():
 	path = [item.strip() for item in args.path.split(",") if item.strip()]
 	with socket.create_connection((args.host, args.port), timeout=10) as connection:
 		if not args.receive_only:
-			info = aprs_message_info(args.destination, args.message, args.message_id)
-			frame = ax25_ui_frame(args.source, "APRS", path, info)
-			packet = kiss_encode(frame)
-			connection.sendall(packet)
-			print(f"Sent {len(packet)} KISS bytes to {args.host}:{args.port}")
+			packets = []
+			for segment in split_aprs_message(args.message, args.message_id):
+				info = aprs_message_info(args.destination, segment, args.message_id)
+				packet = kiss_encode(ax25_ui_frame(args.source, "APRS", path, info))
+				connection.sendall(packet)
+				packets.append(packet)
+			print(f"Sent {len(packets)} APRS packet(s) to {args.host}:{args.port}")
 		print(f"Listening for APRS packets for {args.listen_seconds:g} seconds...")
 		receive_aprs_frames(connection, args.listen_seconds)
 
