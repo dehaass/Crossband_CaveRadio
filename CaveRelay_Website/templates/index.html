@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cave Relay / Operations</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">QDX / SURFACE STATION</p>
+      <h1>Cave Relay</h1>
+    </div>
+    <div class="live-status"><span class="status-dot" id="overall-dot"></span><div><span id="overall-label">Checking systems</span><small id="last-checked">Last checked: --</small></div></div>
+  </header>
+
+  <main class="shell">
+    <section class="status-grid" aria-label="System health">
+      <article class="status-card" id="fldigi-card"><div class="card-kicker">MODEM LINK</div><div class="status-heading"><h2>Fldigi</h2><span class="health-badge" id="fldigi-badge"><span class="status-dot"></span>CHECKING</span></div><div class="status-value" id="fldigi-status">—</div><p id="fldigi-detail">XML-RPC status</p></article>
+      <article class="status-card" id="aprs-card"><div class="card-kicker">VHF GATEWAY</div><div class="status-heading"><h2>APRS / Dire Wolf</h2><span class="health-badge" id="aprs-badge"><span class="status-dot"></span>CHECKING</span></div><div class="status-value" id="aprs-status">—</div><p id="aprs-detail">KISS TCP status</p></article>
+      <article class="status-card"><div class="card-kicker">TRAFFIC</div><h2>Message log</h2><div class="status-value" id="message-count">--</div><p>recent records loaded</p></article>
+    </section>
+
+    <section class="workspace">
+      <div class="log-stack">
+        <section class="panel log-panel">
+          <div class="panel-head"><div><p class="eyebrow">PERSISTED JSONL</p><h2>Fldigi traffic</h2></div><span class="table-count" id="fldigi-count">0 records</span></div>
+          <div class="table-tools"><input id="fldigi-search" type="search" placeholder="Search Fldigi traffic"><select id="fldigi-direction"><option value="all">All directions</option><option value="fldigi_rx">Received</option><option value="fldigi_tx">Transmitted</option></select><select id="fldigi-crc"><option value="all">All CRC states</option><option value="valid">CRC valid</option><option value="invalid">CRC mismatch</option></select><select id="fldigi-sort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="transport">Transport</option></select></div>
+          <div class="log-table-wrap"><table><thead><tr><th>Time</th><th>Direction</th><th>Route</th><th>Message / detail</th><th>S/N avg</th><th>CRC</th></tr></thead><tbody id="fldigi-log-body"><tr><td colspan="6" class="empty">Loading records...</td></tr></tbody></table></div>
+        </section>
+        <section class="panel log-panel">
+          <div class="panel-head"><div><p class="eyebrow">PERSISTED JSONL</p><h2>APRS traffic</h2></div><button class="icon-button" id="refresh-button" title="Refresh traffic and health">↻</button></div>
+          <div class="table-tools"><input id="aprs-search" type="search" placeholder="Search APRS traffic"><select id="aprs-direction"><option value="all">All directions</option><option value="aprs_rx">Received</option><option value="aprs_tx">Transmitted</option></select><select id="aprs-sort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="transport">Transport</option></select></div>
+          <div class="log-table-wrap"><table><thead><tr><th>Time</th><th>Direction</th><th>Route</th><th>Message / detail</th></tr></thead><tbody id="aprs-log-body"><tr><td colspan="4" class="empty">Loading records...</td></tr></tbody></table></div>
+        </section>
+      </div>
+
+      <aside class="side-column">
+        <section class="panel compose-panel"><div class="panel-head"><div><p class="eyebrow">OUTBOUND</p><h2>Send APRS</h2></div><span class="signal-mark">APRS</span></div><form id="aprs-form"><label>Destination<input name="destination" list="aprs-destinations" placeholder="VE6SDH" required><datalist id="aprs-destinations"></datalist></label><label>Message<textarea name="message" rows="4" placeholder="Status from surface station" required></textarea></label><label>Message ID <span class="optional">optional</span><input name="message_id" inputmode="numeric" maxlength="3" placeholder="001"></label><button class="primary-button" type="submit">Transmit over APRS <span>→</span></button></form><div class="form-result" id="aprs-result"></div></section>
+        <section class="panel compose-panel"><div class="panel-head"><div><p class="eyebrow">OUTBOUND</p><h2>Send RadioMSG</h2></div><span class="signal-mark warm">THOR4</span></div><form id="fldigi-form"><label>Message<textarea name="message" rows="4" placeholder="Message to all cave stations" required></textarea></label><label>Via relay <span class="optional">optional</span><input name="via" list="fldigi-relays" placeholder="unit2"><datalist id="fldigi-relays"></datalist></label><button class="primary-button warm-button" type="submit">Transmit over Fldigi <span>→</span></button></form><div class="form-result" id="fldigi-result"></div></section>
+      </aside>
+    </section>
+  </main>
+  <div class="detail-backdrop" id="detail-backdrop" hidden></div>
+  <aside class="detail-drawer" id="detail-drawer" aria-hidden="true" aria-labelledby="detail-title" role="dialog">
+    <div class="detail-head"><div><p class="eyebrow">MESSAGE RECORD</p><h2 id="detail-title">Details</h2></div><button class="icon-button" id="detail-close" title="Close details">×</button></div>
+    <div class="detail-content" id="detail-content"></div>
+  </aside>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
