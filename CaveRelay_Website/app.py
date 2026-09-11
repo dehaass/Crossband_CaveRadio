@@ -14,7 +14,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Crossband_Relay import CrossbandRelay, TRAFFIC_LOG_PATH  # noqa: E402
-from QDX_Fldigi_coms import send_radiomsg  # noqa: E402
 
 app = Flask(__name__)
 relay = CrossbandRelay()
@@ -104,8 +103,7 @@ def send_fldigi():
         return jsonify({"error": "Message is required."}), 400
     try:
         ensure_relay_started()
-        wire_message = send_radiomsg(
-            relay._fldigi,
+        wire_message = relay.transmit_radiomsg(
             message,
             from_call="SURF",
             to_call="*",

@@ -32,9 +32,10 @@ async function refreshHealth() {
   $('#fldigi-status').textContent = fldigiOk ? 'READY' : 'OFFLINE';
   $('#fldigi-detail').textContent = health.fldigi?.status || health.fldigi?.last_error || 'XML-RPC status';
   const receiving = Boolean(health.fldigi?.receiving);
+  const transmitting = Boolean(health.fldigi?.transmitting);
   const receiveBadge = $('#fldigi-receive-badge');
-  receiveBadge.className = `health-badge ${receiving ? 'offline' : 'online'}`;
-  receiveBadge.innerHTML = `<span class="status-dot ${receiving ? 'bad' : 'good'}"></span>${receiving ? 'MESSAGE?' : 'LISTENING'}`;
+  receiveBadge.className = `health-badge ${transmitting ? 'transmitting' : (receiving ? 'offline' : 'online')}`;
+  receiveBadge.innerHTML = `<span class="status-dot ${transmitting ? 'transmit' : (receiving ? 'bad' : 'good')}"></span>${transmitting ? 'TRANSMITTING' : (receiving ? 'MESSAGE?' : 'LISTENING')}`;
   $('#fldigi-raw-text').textContent = health.fldigi?.raw_text || 'No decoded characters currently arriving.';
   $('#aprs-status').textContent = aprsOk ? 'READY' : 'OFFLINE';
   $('#aprs-detail').textContent = aprsOk ? `${health.aprs.host}:${health.aprs.port}` : (health.aprs.last_error || 'KISS TCP status');

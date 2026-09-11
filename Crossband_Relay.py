@@ -77,6 +77,7 @@ class CrossbandRelay:
         self._fldigi_last_rx_at = None
         self._fldigi_sn_status = None
         self._fldigi_sn_value = None
+        self._fldigi_transmitting = False
         self._fldigi = None
         self._aprs = AprsService(
             source=SOURCE_CALLSIGN,
@@ -115,6 +116,7 @@ class CrossbandRelay:
             "last_ok": self._fldigi_last_ok,
             "last_error": self._fldigi_last_error,
             "receiving": self._fldigi_sn_value is not None,
+            "transmitting": self._fldigi_transmitting,
             "raw_text": self._fldigi_raw_text,
             "sn_status": self._fldigi_sn_status,
             "sn_value": self._fldigi_sn_value,
@@ -141,6 +143,16 @@ class CrossbandRelay:
         if subsystem not in {"fldigi", "aprs", "radio"}:
             raise ValueError("subsystem must be fldigi, aprs, or radio")
         self._power_cycle_hook(subsystem)
+
+    def transmit_radiomsg(self, message, **fields):
+        """Transmit RadioMSG while exposing the active TX state to health clients."""
+        if self._fldigi is None:
+            raise RuntimeError("Fldigi is not connected")
+        self._fldigi_transmitting = True
+        try:
+            return send_radiomsg(self._fldigi, message, **fields)
+        finally:
+            self._fldigi_transmitting = False
 
     def _health_monitor_loop(self):
         while not self._stop_event.wait(HEALTH_INTERVAL_SECONDS):
@@ -348,8 +360,7 @@ class CrossbandRelay:
                 self.log,
             )
             try:
-                wire_message = send_radiomsg(
-                    self._fldigi,
+                wire_message = self.transmit_radiomsg(
                     fldigi_message,
                     from_call="SURF",
                     to_call="*",

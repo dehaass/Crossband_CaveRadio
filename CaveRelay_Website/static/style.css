@@ -21,6 +21,8 @@ h1,h2,p { margin-top:0; } h1 { margin-bottom:0; font-size:clamp(32px,4vw,52px); 
 .health-badge { display:flex; align-items:center; gap:7px; padding:5px 8px; border:1px solid #c7cec8; color:var(--muted); font:500 10px 'DM Mono',monospace; letter-spacing:.5px; }
 .health-badge.online { color:var(--green); border-color:#acd2c4; background:#edf8f3; }
 .health-badge.offline { color:var(--red); border-color:#e2b4ad; background:#fff1ef; }
+.health-badge.transmitting { color:var(--orange); border-color:#e8bca9; background:#fff4ed; }
+.health-badge .status-dot.transmit { background:var(--orange); box-shadow:0 0 0 4px rgba(198,93,46,.15); }
 .health-badge .status-dot { width:7px; height:7px; box-shadow:none; }
 .log-stack { display:grid; gap:18px; min-width:0; }
 .log-row { cursor:pointer; }
