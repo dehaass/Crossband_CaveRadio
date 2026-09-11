@@ -32,6 +32,11 @@ VIA_RE = re.compile(r'via:\s*(.*)$', re.IGNORECASE)
 SMS_RE = re.compile(r'sms:\s*(.*)$', re.IGNORECASE)
 RLY_RE = re.compile(r'rly:\s*(.*)$', re.IGNORECASE)
 ID_RE = re.compile(r'id:\s*(.*)$', re.IGNORECASE)
+POS_RE = re.compile(r'pos:\s*(.*)$', re.IGNORECASE)
+PIC_RE = re.compile(r'pic:\s*(.*)$', re.IGNORECASE)
+RD_RE = re.compile(r'rd:\s*(.*)$', re.IGNORECASE)
+RO_RE = re.compile(r'ro:\s*(.*)$', re.IGNORECASE)
+TIM_RE = re.compile(r'tim:\s*(.*)$', re.IGNORECASE)
 CHECKSUM_RE = re.compile(r'([A-Za-z0-9]+)\s*$')
 
 # Control characters (e.g. SOH 0x01 at message start, EOT 0x04 at message end) can end up
@@ -90,7 +95,11 @@ def crc16(text):
     return ''.join(chr(ord(c) + 55) if c < 'a' else c for c in hex_str)
 
 
-def expected_checksum(from_call, to_call, message, via=None, rly=None, msg_id=None, password=''):
+def expected_checksum(
+    from_call, to_call, message, via=None, rly=None, msg_id=None,
+    position=None, picture=None, received_date=None, received_offset=None,
+    time_sync=None, password='',
+):
     """Reconstructs the wire buffer RadioMSG hashes and returns the expected checksum for it."""
     buffer = SOH + from_call.lower() + ':' + to_call.lower() + '\n'
     if message:
@@ -99,8 +108,18 @@ def expected_checksum(from_call, to_call, message, via=None, rly=None, msg_id=No
         buffer += 'via:' + via.lower() + '\n'
     if rly:
         buffer += 'rly:' + rly.lower() + '\n'
+    if position:
+        buffer += 'pos:' + position + '\n'
+    if picture:
+        buffer += 'pic:' + picture + '\n'
     if msg_id:
         buffer += 'id:' + msg_id + '\n'
+    if received_date:
+        buffer += 'rd:' + received_date + '\n'
+    elif received_offset:
+        buffer += 'ro:' + received_offset + '\n'
+    if time_sync:
+        buffer += 'tim:' + time_sync + '\n'
     return crc16(buffer + password)
 
 
@@ -115,6 +134,11 @@ class RadioMsg:
     via: Optional[str] = None
     rly: Optional[str] = None
     msg_id: Optional[str] = None
+    position: Optional[str] = None
+    picture: Optional[str] = None
+    received_date: Optional[str] = None
+    received_offset: Optional[str] = None
+    time_sync: Optional[str] = None
     received_at: float = field(default_factory=time.time)
     raw: str = ''
     checksum_valid: Optional[bool] = None
@@ -141,6 +165,11 @@ class RadioMsgParser:
         self._via = None
         self._rly = None
         self._id = None
+        self._position = None
+        self._picture = None
+        self._received_date = None
+        self._received_offset = None
+        self._time_sync = None
         self._sms = None
         self._raw_lines = []
 
@@ -169,7 +198,13 @@ class RadioMsgParser:
         sms_match = SMS_RE.search(line)
         rly_match = RLY_RE.search(line)
         id_match = ID_RE.search(line)
-        if via_match or sms_match or rly_match or id_match:
+        pos_match = POS_RE.search(line)
+        pic_match = PIC_RE.search(line)
+        rd_match = RD_RE.search(line)
+        ro_match = RO_RE.search(line)
+        tim_match = TIM_RE.search(line)
+        if any((via_match, sms_match, rly_match, id_match, pos_match,
+            pic_match, rd_match, ro_match, tim_match)):
             if not self._in_message:
                 return None  # noise outside a message block
             self._raw_lines.append(line)
@@ -179,6 +214,16 @@ class RadioMsgParser:
                 self._rly = rly_match.group(1)
             elif id_match:
                 self._id = id_match.group(1)
+            elif pos_match:
+                self._position = pos_match.group(1)
+            elif pic_match:
+                self._picture = pic_match.group(1)
+            elif rd_match:
+                self._received_date = rd_match.group(1)
+            elif ro_match:
+                self._received_offset = ro_match.group(1)
+            elif tim_match:
+                self._time_sync = tim_match.group(1)
             else:
                 self._sms = sms_match.group(1)
             return None
@@ -213,13 +258,20 @@ class RadioMsgParser:
             via=self._via,
             rly=self._rly,
             msg_id=self._id,
+            position=self._position,
+            picture=self._picture,
+            received_date=self._received_date,
+            received_offset=self._received_offset,
+            time_sync=self._time_sync,
             raw='\n'.join(self._raw_lines),
         )
         # 'ssss' is a fixed sentinel checksum used by RadioMSG for Selcall/Telcall messages.
         msg.checksum_valid = (
             checksum.lower() == 'ssss'
             or checksum.lower() == expected_checksum(
-                msg.from_call, msg.to_call, msg.message, msg.via, msg.rly, msg.msg_id
+                msg.from_call, msg.to_call, msg.message, msg.via, msg.rly, msg.msg_id,
+                msg.position, msg.picture, msg.received_date, msg.received_offset,
+                msg.time_sync,
             )
         )
         self._reset_current()
