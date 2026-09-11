@@ -68,6 +68,8 @@ class CrossbandRelay:
         self._fldigi_last_error = None
         self._power_cycle_hook = power_cycle_hook
         self._radio_parser = RadioMsgParser()
+        self._rx_sn_samples = []
+        self._rx_sn_status = []
         self._fldigi = None
         self._aprs = AprsService(
             source=SOURCE_CALLSIGN,
@@ -170,9 +172,21 @@ class CrossbandRelay:
                 if rx_data:
                     if isinstance(rx_data, bytes):
                         rx_data = rx_data.decode("utf-8", errors="replace")
+                    sn_status = self._read_fldigi_sn()
+                    if sn_status is not None:
+                        self._rx_sn_status.append(sn_status)
+                        sn_value = self._parse_sn_value(sn_status)
+                        if sn_value is not None:
+                            self._rx_sn_samples.append(sn_value)
                     self.log.debug("Fldigi RX: %r", rx_data)
-                    for message in self._radio_parser.feed(rx_data):
-                        self._handle_radio_message(message)
+                    messages = self._radio_parser.feed(rx_data)
+                    for index, message in enumerate(messages):
+                        samples = self._rx_sn_samples if index == 0 else []
+                        statuses = self._rx_sn_status if index == 0 else []
+                        self._handle_radio_message(message, samples, statuses)
+                    if messages:
+                        self._rx_sn_samples.clear()
+                        self._rx_sn_status.clear()
                 time.sleep(POLL_INTERVAL_SECONDS)
         except KeyboardInterrupt:
             self.log.info("Stopping after Ctrl+C")
@@ -186,9 +200,28 @@ class CrossbandRelay:
             self._monitor_thread.join(timeout=2)
         self._monitor_thread = None
 
-    def _handle_radio_message(self, message):
+    def _read_fldigi_sn(self):
+        try:
+            return str(self._fldigi.main.status1)
+        except Exception as error:
+            self.log.debug("Unable to read Fldigi S/N status: %s", error)
+            return None
+
+    @staticmethod
+    def _parse_sn_value(status):
+        match = re.search(r"[-+]?\d+(?:\.\d+)?", status)
+        return float(match.group()) if match else None
+
+    def _handle_radio_message(self, message, sn_samples=None, sn_status=None):
         log_entry = dataclasses.asdict(message)
         log_entry["transport"] = "fldigi"
+        sn_samples = sn_samples or []
+        sn_status = sn_status or []
+        log_entry["sn_average"] = (
+            sum(sn_samples) / len(sn_samples) if sn_samples else None
+        )
+        log_entry["sn_samples"] = sn_samples
+        log_entry["sn_status"] = sn_status[-1] if sn_status else None
         write_traffic_log(log_entry, self.log, message.received_at)
 
         if not message.checksum_valid:
@@ -206,12 +239,11 @@ class CrossbandRelay:
                 message.time_sync,
             )
             self.log.warning(
-                "Ignoring RadioMSG with invalid checksum: received=%s expected=%s raw=%s",
+                "Relaying RadioMSG with checksum mismatch: received=%s expected=%s raw=%s",
                 message.checksum,
                 expected,
                 message.raw,
             )
-            return
         try:
             aprs_text = radio_msg_to_aprs_text(message)
             self._aprs.send_message(APRS_DESTINATION_CALLSIGN, aprs_text)
@@ -226,7 +258,7 @@ class CrossbandRelay:
         )
 
     def _get_recent_fldigi_message(self, message_number):
-        """Return the Nth most recent valid Fldigi log entry, or None."""
+        """Return the Nth most recent Fldigi log entry, or None."""
         try:
             with open(TRAFFIC_LOG_PATH, "r", encoding="utf-8") as traffic_log:
                 for line in reversed(traffic_log.readlines()):
@@ -234,10 +266,7 @@ class CrossbandRelay:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if (
-                        entry.get("transport") == "fldigi"
-                        and entry.get("checksum_valid") is True
-                    ):
+                    if entry.get("transport") == "fldigi":
                         message_number -= 1
                         if message_number == 0:
                             return entry
