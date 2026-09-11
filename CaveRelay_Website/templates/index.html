@@ -27,12 +27,12 @@
         <section class="panel log-panel">
           <div class="panel-head"><div><p class="eyebrow">PERSISTED JSONL</p><h2>Fldigi traffic</h2></div><span class="table-count" id="fldigi-count">0 records</span></div>
           <div class="table-tools"><input id="fldigi-search" type="search" placeholder="Search Fldigi traffic"><select id="fldigi-direction"><option value="all">All directions</option><option value="fldigi_rx">Received</option><option value="fldigi_tx">Transmitted</option></select><select id="fldigi-crc"><option value="all">All CRC states</option><option value="valid">CRC valid</option><option value="invalid">CRC mismatch</option></select><select id="fldigi-sort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="transport">Transport</option></select></div>
-          <div class="log-table-wrap"><table><thead><tr><th>Time</th><th>Direction</th><th>Route</th><th>Message / detail</th><th>S/N avg</th><th>CRC</th></tr></thead><tbody id="fldigi-log-body"><tr><td colspan="6" class="empty">Loading records...</td></tr></tbody></table></div>
+          <div class="log-table-wrap"><table><thead><tr><th>Timestamp</th><th>Direction</th><th>From</th><th>To</th><th>Via</th><th>Message</th><th>S/N status</th></tr></thead><tbody id="fldigi-log-body"><tr><td colspan="7" class="empty">Loading records...</td></tr></tbody></table></div>
         </section>
         <section class="panel log-panel">
           <div class="panel-head"><div><p class="eyebrow">PERSISTED JSONL</p><h2>APRS traffic</h2></div><button class="icon-button" id="refresh-button" title="Refresh traffic and health">↻</button></div>
           <div class="table-tools"><input id="aprs-search" type="search" placeholder="Search APRS traffic"><select id="aprs-direction"><option value="all">All directions</option><option value="aprs_rx">Received</option><option value="aprs_tx">Transmitted</option></select><select id="aprs-sort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="transport">Transport</option></select></div>
-          <div class="log-table-wrap"><table><thead><tr><th>Time</th><th>Direction</th><th>Route</th><th>Message / detail</th></tr></thead><tbody id="aprs-log-body"><tr><td colspan="4" class="empty">Loading records...</td></tr></tbody></table></div>
+          <div class="log-table-wrap"><table><thead><tr><th>Timestamp</th><th>Direction</th><th>From</th><th>To</th><th>Message</th><th>Message ID</th></tr></thead><tbody id="aprs-log-body"><tr><td colspan="6" class="empty">Loading records...</td></tr></tbody></table></div>
         </section>
       </div>
 

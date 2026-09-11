@@ -254,7 +254,7 @@ class CrossbandRelay:
 
         self.log.info("Relayed RadioMSG from %s to APRS %s", message.from_call, APRS_DESTINATION_CALLSIGN)
         write_traffic_log(
-            {"transport": "aprs_tx", "destination": APRS_DESTINATION_CALLSIGN, "message": aprs_text},
+            {"transport": "aprs_tx", "source": SOURCE_CALLSIGN, "destination": APRS_DESTINATION_CALLSIGN, "message": aprs_text},
             self.log,
         )
 
@@ -317,6 +317,7 @@ class CrossbandRelay:
             write_traffic_log(
                 {
                     "transport": "aprs_tx",
+                    "source": SOURCE_CALLSIGN,
                     "destination": packet["source"],
                     "command": command,
                     "message": acknowledgement,
@@ -370,6 +371,7 @@ class CrossbandRelay:
             write_traffic_log(
                 {
                     "transport": "aprs_tx",
+                    "source": SOURCE_CALLSIGN,
                     "destination": APRS_DESTINATION_CALLSIGN,
                     "command": command,
                     "message": response,
@@ -402,6 +404,7 @@ class CrossbandRelay:
         write_traffic_log(
             {
                 "transport": "aprs_tx",
+                "source": SOURCE_CALLSIGN,
                 "destination": APRS_DESTINATION_CALLSIGN,
                 "command": command,
                 "message": response,
