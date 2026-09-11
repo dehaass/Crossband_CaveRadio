@@ -13,6 +13,7 @@ import argparse
 import socket
 import re
 import time
+import threading
 
 
 KISS_FEND = 0xC0
@@ -151,8 +152,116 @@ def parse_aprs_information(info):
 	}
 
 
+class AprsService:
+	"""Maintain a KISS connection and exchange APRS packets in the background.
+
+	Example::
+
+		service = AprsService("VE6LF", on_packet=handle_packet)
+		service.start()
+		service.send_message("VE6SDH", "Relay test", message_id="001")
+		service.stop()
+	"""
+
+	def __init__(self, source, host=DEFAULT_KISS_HOST, port=DEFAULT_KISS_PORT,
+				 path=None, on_packet=None, on_error=None):
+		self.source = source
+		self.host = host
+		self.port = port
+		self.path = list(path or [])
+		self.on_packet = on_packet
+		self.on_error = on_error
+		self._connection = None
+		self._thread = None
+		self._stop_event = threading.Event()
+		self._send_lock = threading.Lock()
+
+	@property
+	def running(self):
+		"""Whether the background receive loop is active."""
+		return self._thread is not None and self._thread.is_alive()
+
+	def start(self):
+		"""Connect to Dire Wolf and start receiving packets."""
+		if self.running:
+			return
+		self._connection = socket.create_connection((self.host, self.port), timeout=10)
+		self._connection.settimeout(1.0)
+		self._stop_event.clear()
+		self._thread = threading.Thread(target=self._receive_loop, name="aprs-receive", daemon=True)
+		self._thread.start()
+
+	def send_message(self, destination, message, message_id=None):
+		"""Transmit one addressed APRS message through the active connection."""
+		if self._connection is None or not self.running:
+			raise RuntimeError("AprsService.start() must be called before send_message()")
+		info = aprs_message_info(destination, message, message_id)
+		frame = ax25_ui_frame(self.source, "APRS", self.path, info)
+		packet = kiss_encode(frame)
+		with self._send_lock:
+			self._connection.sendall(packet)
+		return packet
+
+	def stop(self):
+		"""Stop receiving and close the KISS connection."""
+		self._stop_event.set()
+		connection = self._connection
+		if connection is not None:
+			try:
+				connection.shutdown(socket.SHUT_RDWR)
+			except OSError:
+				pass
+			try:
+				connection.close()
+			except OSError:
+				pass
+		self._connection = None
+		if self._thread is not None and self._thread is not threading.current_thread():
+			self._thread.join(timeout=2)
+		self._thread = None
+
+	def _receive_loop(self):
+		decoder = KissDecoder()
+		try:
+			while not self._stop_event.is_set():
+				try:
+					data = self._connection.recv(4096)
+				except socket.timeout:
+					continue
+				if not data:
+					break
+				for frame in decoder.feed(data):
+					self._handle_frame(frame)
+		except OSError as error:
+			if not self._stop_event.is_set():
+				self._report_error(error)
+		finally:
+			self._connection = None
+
+	def _handle_frame(self, frame):
+		try:
+			addresses, info = decode_ax25_ui_frame(frame)
+			parsed = parse_aprs_information(info)
+			packet = {
+				"source": addresses[1] if len(addresses) > 1 else addresses[0],
+				"destination": addresses[0],
+				"path": addresses[2:],
+				"info": info,
+				"parsed": parsed,
+			}
+		except (IndexError, ValueError) as error:
+			self._report_error(error)
+			return
+		if self.on_packet is not None:
+			self.on_packet(packet)
+
+	def _report_error(self, error):
+		if self.on_error is not None:
+			self.on_error(error)
+
+
 def receive_aprs_frames(connection, listen_seconds):
-	"""Receive and print decoded APRS frames until timeout or socket close."""
+	"""Receive and print decoded APRS frames for CLI compatibility."""
 	decoder = KissDecoder()
 	connection.settimeout(1.0)
 	deadline = time.monotonic() + listen_seconds

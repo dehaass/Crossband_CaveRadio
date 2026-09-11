@@ -2,12 +2,9 @@
 # Communicates with Fldigi to decode RadioMSG style messages sent from QDX cave radios
 # This script can run on a server connected to a QDX radio and interact with Fldigi for message decoding
 
-import os
 import sys
 import time
-import json
 import logging
-import dataclasses
 
 # Allow running against the local pyFldigi source without needing to `pip install` it first.
 # sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pyFldigi'))
@@ -19,16 +16,6 @@ FLDIGI_HOSTNAME = '127.0.0.1'
 FLDIGI_PORT = 7362
 MODEM_NAME = 'THOR4'
 POLL_INTERVAL_SECONDS = 0.5
-MESSAGE_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'messages.jsonl')
-
-
-def save_message(msg, log):
-    """Append a parsed message to a JSON-lines log for use by later relay/logging steps."""
-    try:
-        with open(MESSAGE_LOG_PATH, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(dataclasses.asdict(msg)) + '\n')
-    except OSError as e:
-        log.error('Failed to write message log: %s', e)
 
 
 def main():
@@ -60,7 +47,6 @@ def main():
                     log.info('Parsed message: %s', msg)
                     if not msg.checksum_valid:
                         log.warning('Checksum mismatch for message from %s: %s', msg.from_call, msg.raw)
-                    save_message(msg, log)
             time.sleep(POLL_INTERVAL_SECONDS)
     except KeyboardInterrupt:
         log.info('Stopped by user')
