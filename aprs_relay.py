@@ -164,13 +164,14 @@ class AprsService:
 	"""
 
 	def __init__(self, source, host=DEFAULT_KISS_HOST, port=DEFAULT_KISS_PORT,
-				 path=None, on_packet=None, on_error=None):
+				 path=None, on_packet=None, on_error=None, auto_ack=True):
 		self.source = source
 		self.host = host
 		self.port = port
 		self.path = list(path or [])
 		self.on_packet = on_packet
 		self.on_error = on_error
+		self.auto_ack = auto_ack
 		self._connection = None
 		self._thread = None
 		self._stop_event = threading.Event()
@@ -193,9 +194,24 @@ class AprsService:
 
 	def send_message(self, destination, message, message_id=None):
 		"""Transmit one addressed APRS message through the active connection."""
-		if self._connection is None or not self.running:
-			raise RuntimeError("AprsService.start() must be called before send_message()")
 		info = aprs_message_info(destination, message, message_id)
+		return self._send_info(info)
+
+	def send_ack(self, destination, message_id):
+		"""Transmit an APRS acknowledgement for a received message ID."""
+		message_id = str(message_id)
+		if not message_id.isdigit() or not 1 <= len(message_id) <= 3:
+			raise ValueError("APRS message ID must contain 1 to 3 digits")
+		destination_call, destination_ssid = parse_callsign(destination)
+		destination_text = destination_call + (f"-{destination_ssid}" if destination_ssid else "")
+		if len(destination_text) > 9:
+			raise ValueError("APRS message addressee must fit in 9 characters")
+		info = f":{destination_text:<9}:ack{message_id}".encode("ascii")
+		return self._send_info(info)
+
+	def _send_info(self, info):
+		if self._connection is None or not self.running:
+			raise RuntimeError("AprsService.start() must be called before transmitting")
 		frame = ax25_ui_frame(self.source, "APRS", self.path, info)
 		packet = kiss_encode(frame)
 		with self._send_lock:
@@ -252,6 +268,16 @@ class AprsService:
 		except (IndexError, ValueError) as error:
 			self._report_error(error)
 			return
+		if (
+			self.auto_ack
+			and parsed["type"] == "message"
+			and parsed.get("message_id")
+			and parsed.get("to", "").upper() == self.source.upper()
+		):
+			try:
+				self.send_ack(packet["source"], parsed["message_id"])
+			except (RuntimeError, OSError, ValueError) as error:
+				self._report_error(error)
 		if self.on_packet is not None:
 			self.on_packet(packet)
 

@@ -8,6 +8,7 @@ from datetime import datetime
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -19,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyF
 
 import pyfldigi
 
-from radiomsg import RadioMsgParser
+from radiomsg import RadioMsgParser, expected_checksum
 
 
 SOURCE_CALLSIGN = "VE6LF"
@@ -118,7 +119,25 @@ class CrossbandRelay:
         write_traffic_log(log_entry, self.log, message.received_at)
 
         if not message.checksum_valid:
-            self.log.warning("Ignoring RadioMSG with invalid checksum: %s", message.raw)
+            expected = expected_checksum(
+                message.from_call,
+                message.to_call,
+                message.message,
+                message.via,
+                message.rly,
+                message.msg_id,
+                message.position,
+                message.picture,
+                message.received_date,
+                message.received_offset,
+                message.time_sync,
+            )
+            self.log.warning(
+                "Ignoring RadioMSG with invalid checksum: received=%s expected=%s raw=%s",
+                message.checksum,
+                expected,
+                message.raw,
+            )
             return
         try:
             aprs_text = radio_msg_to_aprs_text(message)
@@ -133,10 +152,74 @@ class CrossbandRelay:
             self.log,
         )
 
+    def _get_recent_fldigi_message(self, message_number):
+        """Return the Nth most recent valid Fldigi log entry, or None."""
+        try:
+            with open(TRAFFIC_LOG_PATH, "r", encoding="utf-8") as traffic_log:
+                for line in reversed(traffic_log.readlines()):
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        entry.get("transport") == "fldigi"
+                        and entry.get("checksum_valid") is True
+                    ):
+                        message_number -= 1
+                        if message_number == 0:
+                            return entry
+        except OSError as error:
+            self.log.error("Unable to read traffic log: %s", error)
+        return None
+
     def _handle_aprs_packet(self, packet):
         log_entry = {"transport": "aprs_rx", **packet}
         write_traffic_log(log_entry, self.log)
         self.log.info("APRS RX from %s: %s", packet["source"], packet["parsed"])
+
+        parsed = packet["parsed"]
+        if parsed.get("type") != "message":
+            return
+        if parsed.get("to", "").upper() != SOURCE_CALLSIGN.upper():
+            return
+
+        command = parsed.get("message", "").strip()
+        command_match = re.fullmatch(r"msg\s+([1-9][0-9]*)", command, re.IGNORECASE)
+        if command_match is None:
+            return
+
+        message_number = int(command_match.group(1))
+        message = self._get_recent_fldigi_message(message_number)
+        if message is None:
+            response = f"No Fldigi message {message_number} is available"
+        else:
+            try:
+                response = " ".join(message["raw"].splitlines())
+                if len(response) > 67:
+                    raise ValueError("message is too long for APRS")
+            except ValueError as error:
+                self.log.warning("Cannot return Fldigi message %d: %s", message_number, error)
+                response = f"Fldigi message {message_number} is too long for APRS"
+
+        try:
+            self._aprs.send_message(
+                APRS_DESTINATION_CALLSIGN,
+                response,
+                message_id=parsed.get("message_id"),
+            )
+        except (RuntimeError, OSError, ValueError) as error:
+            self.log.error("Unable to send APRS command response: %s", error)
+            return
+        self.log.info("Returned Fldigi message %d to APRS %s", message_number, APRS_DESTINATION_CALLSIGN)
+        write_traffic_log(
+            {
+                "transport": "aprs",
+                "destination": APRS_DESTINATION_CALLSIGN,
+                "command": command,
+                "message": response,
+            },
+            self.log,
+        )
 
     def _handle_aprs_error(self, error):
         self.log.error("APRS receive error: %s", error)
