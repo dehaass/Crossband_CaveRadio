@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyF
 
 import pyfldigi
 
+from QDX_Fldigi_coms import format_radiomsg, send_radiomsg
 from radiomsg import RadioMsgParser, expected_checksum
 
 
@@ -31,7 +32,7 @@ FLDIGI_MODEM = "THOR4"
 KISS_HOSTNAME = "127.0.0.1"
 KISS_PORT = 8001
 POLL_INTERVAL_SECONDS = 0.5
-HEALTH_INTERVAL_SECONDS = 30
+HEALTH_INTERVAL_SECONDS = 300
 TRAFFIC_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "messages.jsonl")
 
 
@@ -214,7 +215,7 @@ class CrossbandRelay:
 
     def _handle_radio_message(self, message, sn_samples=None, sn_status=None):
         log_entry = dataclasses.asdict(message)
-        log_entry["transport"] = "fldigi"
+        log_entry["transport"] = "fldigi_rx"
         sn_samples = sn_samples or []
         sn_status = sn_status or []
         log_entry["sn_average"] = (
@@ -253,7 +254,7 @@ class CrossbandRelay:
 
         self.log.info("Relayed RadioMSG from %s to APRS %s", message.from_call, APRS_DESTINATION_CALLSIGN)
         write_traffic_log(
-            {"transport": "aprs", "destination": APRS_DESTINATION_CALLSIGN, "message": aprs_text},
+            {"transport": "aprs_tx", "destination": APRS_DESTINATION_CALLSIGN, "message": aprs_text},
             self.log,
         )
 
@@ -266,7 +267,7 @@ class CrossbandRelay:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if entry.get("transport") == "fldigi":
+                    if entry.get("transport") in {"fldigi", "fldigi_rx"}:
                         message_number -= 1
                         if message_number == 0:
                             return entry
@@ -286,6 +287,68 @@ class CrossbandRelay:
             return
 
         command = parsed.get("message", "").strip()
+        if command.upper().startswith("M:"):
+            fldigi_message = command[2:].strip()
+            via_match = re.search(r"\s+V:\s*([A-Za-z0-9_-]+)\s*$", fldigi_message, re.IGNORECASE)
+            via_call = via_match.group(1) if via_match else None
+            if via_match:
+                fldigi_message = fldigi_message[:via_match.start()].rstrip()
+            if not fldigi_message:
+                self.log.warning("Ignoring empty APRS M: command")
+                return
+            if self._fldigi is None:
+                self.log.error("Unable to relay APRS M: command: Fldigi is not connected")
+                return
+            wire_message = format_radiomsg(
+                "SURF",
+                "*",
+                fldigi_message,
+                via=via_call,
+            )
+            readable_message = " ".join(
+                wire_message.strip("\x01\x04").splitlines()
+            )
+            acknowledgement = f"Sending RadioMSG: {readable_message}"
+            try:
+                self._aprs.send_message(packet["source"], acknowledgement)
+            except (RuntimeError, OSError, ValueError) as error:
+                self.log.error("Unable to acknowledge APRS M: command: %s", error)
+                return
+            write_traffic_log(
+                {
+                    "transport": "aprs_tx",
+                    "destination": packet["source"],
+                    "command": command,
+                    "message": acknowledgement,
+                },
+                self.log,
+            )
+            try:
+                wire_message = send_radiomsg(
+                    self._fldigi,
+                    fldigi_message,
+                    from_call="SURF",
+                    to_call="*",
+                    via=via_call,
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                self.log.error("Unable to relay APRS M: command through Fldigi: %s", error)
+                return
+            self.log.info("Relayed APRS M: command through Fldigi: %s", fldigi_message)
+            write_traffic_log(
+                {
+                    "transport": "fldigi_tx",
+                    "source": "SURF",
+                    "destination": "*",
+                    "via": via_call,
+                    "command": command,
+                    "message": fldigi_message,
+                    "raw": wire_message,
+                },
+                self.log,
+            )
+            return
+
         if command in {"?", "? -v"}:
             snapshot = self.health_snapshot()
             aprs_healthy = snapshot["aprs"]["connected"] and snapshot["aprs"]["running"]
@@ -306,7 +369,7 @@ class CrossbandRelay:
             self.log.info("Returned health status to APRS %s: %s", APRS_DESTINATION_CALLSIGN, response)
             write_traffic_log(
                 {
-                    "transport": "aprs",
+                    "transport": "aprs_tx",
                     "destination": APRS_DESTINATION_CALLSIGN,
                     "command": command,
                     "message": response,
@@ -338,7 +401,7 @@ class CrossbandRelay:
         self.log.info("Returned Fldigi message %d to APRS %s", message_number, APRS_DESTINATION_CALLSIGN)
         write_traffic_log(
             {
-                "transport": "aprs",
+                "transport": "aprs_tx",
                 "destination": APRS_DESTINATION_CALLSIGN,
                 "command": command,
                 "message": response,
