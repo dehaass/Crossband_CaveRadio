@@ -50,7 +50,7 @@ def ensure_relay_started():
 def initialize_relay():
     """Start radio services independently of the first web request."""
     try:
-        ensure_relay_started()
+        relay.run()
         startup_log.info("APRS and Fldigi services started")
     except Exception as error:
         relay._fldigi_last_error = str(error)

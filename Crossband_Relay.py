@@ -32,6 +32,8 @@ FLDIGI_MODEM = "THOR4"
 KISS_HOSTNAME = "127.0.0.1"
 KISS_PORT = 8001
 POLL_INTERVAL_SECONDS = 0.5
+FLDIGI_RX_IDLE_SECONDS = 1.5
+FLDIGI_RAW_PREVIEW_LIMIT = 4000
 HEALTH_INTERVAL_SECONDS = 300
 TRAFFIC_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "messages.jsonl")
 
@@ -71,6 +73,10 @@ class CrossbandRelay:
         self._radio_parser = RadioMsgParser()
         self._rx_sn_samples = []
         self._rx_sn_status = []
+        self._fldigi_raw_text = ""
+        self._fldigi_last_rx_at = None
+        self._fldigi_sn_status = None
+        self._fldigi_sn_value = None
         self._fldigi = None
         self._aprs = AprsService(
             source=SOURCE_CALLSIGN,
@@ -108,6 +114,10 @@ class CrossbandRelay:
             "connected": self._fldigi is not None,
             "last_ok": self._fldigi_last_ok,
             "last_error": self._fldigi_last_error,
+            "receiving": self._fldigi_sn_value is not None,
+            "raw_text": self._fldigi_raw_text,
+            "sn_status": self._fldigi_sn_status,
+            "sn_value": self._fldigi_sn_value,
         }
         if self._fldigi is not None:
             try:
@@ -170,10 +180,19 @@ class CrossbandRelay:
             while not self._stop_event.is_set():
                 rx_data = self._fldigi.text.get_rx_data()
                 self._fldigi_last_ok = time.time()
+                sn_status = self._read_fldigi_sn()
+                self._fldigi_sn_status = sn_status
+                self._fldigi_sn_value = self._parse_sn_value(sn_status) if sn_status else None
+                if self._fldigi_sn_value is None:
+                    self._fldigi_raw_text = ""
                 if rx_data:
                     if isinstance(rx_data, bytes):
                         rx_data = rx_data.decode("utf-8", errors="replace")
-                    sn_status = self._read_fldigi_sn()
+                    if self._fldigi_sn_value is not None:
+                        self._fldigi_last_rx_at = time.time()
+                        self._fldigi_raw_text = (
+                            self._fldigi_raw_text + rx_data
+                        )[-FLDIGI_RAW_PREVIEW_LIMIT:]
                     if sn_status is not None:
                         self._rx_sn_status.append(sn_status)
                         sn_value = self._parse_sn_value(sn_status)
@@ -186,6 +205,7 @@ class CrossbandRelay:
                         statuses = self._rx_sn_status if index == 0 else []
                         self._handle_radio_message(message, samples, statuses)
                     if messages:
+                        self._fldigi_raw_text = ""
                         self._rx_sn_samples.clear()
                         self._rx_sn_status.clear()
                 time.sleep(POLL_INTERVAL_SECONDS)
@@ -203,7 +223,10 @@ class CrossbandRelay:
 
     def _read_fldigi_sn(self):
         try:
-            return str(self._fldigi.main.status1)
+            status = self._fldigi.main.status1
+            if status is None or not str(status).strip():
+                return None
+            return str(status)
         except Exception as error:
             self.log.debug("Unable to read Fldigi S/N status: %s", error)
             return None
