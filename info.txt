@@ -1,0 +1,11 @@
+# See current audio input level:
+arecord -D hw:3,0 -f S16_LE -vv /dev/null
+
+# Start fldigi 'headless'. Unsure if this is actually better.
+xvfb-run fldigi -display :99
+
+# Dire Wolf Config:
+ADEVICE plughw:3,0
+CHANNEL 0
+MYCALL VE6LF
+PPT /dev/ttyUSB0 RTS

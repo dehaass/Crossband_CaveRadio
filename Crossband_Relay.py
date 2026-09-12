@@ -12,30 +12,28 @@ import re
 import sys
 import threading
 import time
+import pyfldigi
 
 from aprs_relay import AprsService
+from config import settings
 
-# Allow this script to use the local pyFldigi source tree.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyFldigi"))
-
-import pyfldigi
 
 from QDX_Fldigi_coms import format_radiomsg, send_radiomsg
 from radiomsg import RadioMsgParser, expected_checksum
 
 
-SOURCE_CALLSIGN = "VE6LF"
-APRS_DESTINATION_CALLSIGN = "VE6SDH"
-FLDIGI_HOSTNAME = "127.0.0.1"
-FLDIGI_PORT = 7362
-FLDIGI_MODEM = "THOR4"
-KISS_HOSTNAME = "127.0.0.1"
-KISS_PORT = 8001
-POLL_INTERVAL_SECONDS = 0.5
-FLDIGI_RX_IDLE_SECONDS = 1.5
-FLDIGI_RAW_PREVIEW_LIMIT = 4000
-HEALTH_INTERVAL_SECONDS = 300
-TRAFFIC_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "messages.jsonl")
+SOURCE_CALLSIGN = settings.source_callsign
+APRS_DESTINATION_CALLSIGN = settings.aprs_destination_callsign
+FLDIGI_HOSTNAME = settings.fldigi_hostname
+FLDIGI_PORT = settings.fldigi_port
+FLDIGI_MODEM = settings.fldigi_modem
+KISS_HOSTNAME = settings.kiss_hostname
+KISS_PORT = settings.kiss_port
+POLL_INTERVAL_SECONDS = settings.poll_interval_seconds
+FLDIGI_RX_IDLE_SECONDS = settings.fldigi_rx_idle_seconds
+FLDIGI_RAW_PREVIEW_LIMIT = settings.fldigi_raw_preview_limit
+HEALTH_INTERVAL_SECONDS = settings.health_interval_seconds
+TRAFFIC_LOG_PATH = settings.traffic_log_path
 
 
 def write_traffic_log(entry, log, received_at=None):
@@ -58,6 +56,16 @@ def write_traffic_log(entry, log, received_at=None):
 def radio_msg_to_aprs_text(message):
     """Represent a RadioMSG block as one line for APRS segmentation."""
     return " ".join(message.raw.splitlines())
+
+
+def aprs_delivery_fields(result):
+    """Return APRS delivery metadata for a persisted traffic record."""
+    return {
+        "message_id": result.message_id,
+        "attempts": result.attempts,
+        "acknowledgement": result.acknowledgement,
+        "acknowledged": result.acknowledged,
+    }
 
 
 class CrossbandRelay:
@@ -282,14 +290,14 @@ class CrossbandRelay:
             )
         try:
             aprs_text = radio_msg_to_aprs_text(message)
-            self._aprs.send_message(APRS_DESTINATION_CALLSIGN, aprs_text)
+            result = self._aprs.send_message(APRS_DESTINATION_CALLSIGN, aprs_text)
         except (RuntimeError, OSError, ValueError) as error:
             self.log.error("Unable to relay RadioMSG over APRS: %s", error)
             return
 
         self.log.info("Relayed RadioMSG from %s to APRS %s", message.from_call, APRS_DESTINATION_CALLSIGN)
         write_traffic_log(
-            {"transport": "aprs_tx", "source": SOURCE_CALLSIGN, "destination": APRS_DESTINATION_CALLSIGN, "message": aprs_text},
+            {"transport": "aprs_tx", "source": SOURCE_CALLSIGN, "destination": APRS_DESTINATION_CALLSIGN, "message": aprs_text, **aprs_delivery_fields(result)},
             self.log,
         )
 
@@ -345,7 +353,7 @@ class CrossbandRelay:
             )
             acknowledgement = f"Sending RadioMSG: {readable_message}"
             try:
-                self._aprs.send_message(packet["source"], acknowledgement)
+                result = self._aprs.send_message(packet["source"], acknowledgement)
             except (RuntimeError, OSError, ValueError) as error:
                 self.log.error("Unable to acknowledge APRS M: command: %s", error)
                 return
@@ -356,6 +364,7 @@ class CrossbandRelay:
                     "destination": packet["source"],
                     "command": command,
                     "message": acknowledgement,
+                    **aprs_delivery_fields(result),
                 },
                 self.log,
             )
@@ -393,7 +402,7 @@ class CrossbandRelay:
             else:
                 response = f"APRS:{'OK' if aprs_healthy else 'FAIL'} Fldigi:{'OK' if fldigi_healthy else 'FAIL'}"
             try:
-                self._aprs.send_message(
+                result = self._aprs.send_message(
                     APRS_DESTINATION_CALLSIGN,
                     response,
                     message_id=parsed.get("message_id"),
@@ -409,6 +418,7 @@ class CrossbandRelay:
                     "destination": APRS_DESTINATION_CALLSIGN,
                     "command": command,
                     "message": response,
+                    **aprs_delivery_fields(result),
                 },
                 self.log,
             )
@@ -426,7 +436,7 @@ class CrossbandRelay:
             response = " ".join(message["raw"].splitlines())
 
         try:
-            self._aprs.send_message(
+            result = self._aprs.send_message(
                 APRS_DESTINATION_CALLSIGN,
                 response,
                 message_id=parsed.get("message_id"),
@@ -442,6 +452,7 @@ class CrossbandRelay:
                 "destination": APRS_DESTINATION_CALLSIGN,
                 "command": command,
                 "message": response,
+                **aprs_delivery_fields(result),
             },
             self.log,
         )

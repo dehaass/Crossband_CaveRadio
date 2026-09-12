@@ -6,21 +6,18 @@ import os
 import sys
 import time
 import logging
+import pyfldigi
 
-# Allow running against the local pyFldigi source without needing to `pip install` it first.
-LOCAL_PYFLDIGI_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pyFldigi')
-if os.path.isdir(LOCAL_PYFLDIGI_PATH):
-    sys.path.insert(0, LOCAL_PYFLDIGI_PATH)
 
-import pyfldigi  # noqa: E402  (import after sys.path tweak above)
 from radiomsg import RadioMsgParser, expected_checksum  # noqa: E402
+from config import settings
 
-FLDIGI_HOSTNAME = '127.0.0.1'
-FLDIGI_PORT = 7362
-MODEM_NAME = 'THOR4'
-POLL_INTERVAL_SECONDS = 0.5
+FLDIGI_HOSTNAME = settings.fldigi_hostname
+FLDIGI_PORT = settings.fldigi_port
+MODEM_NAME = settings.fldigi_modem
+POLL_INTERVAL_SECONDS = settings.poll_interval_seconds
 
-SOURCE_CALLSIGN_RADIOMSG = "SURF" # name used for transmitting RadioMSG style messages through fldigi.
+SOURCE_CALLSIGN_RADIOMSG = settings.radiomsg_source_callsign # name used for transmitting RadioMSG style messages through fldigi.
 
 
 def format_radiomsg(from_call, to_call, message, via=None, rly=None, msg_id=None,

@@ -25,6 +25,22 @@ DEFAULT_KISS_HOST = "127.0.0.1"
 DEFAULT_KISS_PORT = 8001
 DEFAULT_LISTEN_SECONDS = 30
 APRS_MESSAGE_MAX_LENGTH = 67
+RETRIES = 1
+ACK_TIMEOUT_SECONDS = 30
+
+
+class AprsSendResult(list):
+	"""Packets sent and the delivery status reported by the remote station."""
+
+	def __init__(self, packets, message_id, attempts, acknowledgement):
+		super().__init__(packets)
+		self.message_id = message_id
+		self.attempts = attempts
+		self.acknowledgement = acknowledgement
+
+	@property
+	def acknowledged(self):
+		return self.acknowledgement == "ack"
 
 
 def parse_callsign(value):
@@ -204,6 +220,9 @@ class AprsService:
 		self._thread = None
 		self._stop_event = threading.Event()
 		self._send_lock = threading.Lock()
+		self._pending_acks = {}
+		self._pending_acks_lock = threading.Lock()
+		self._next_message_id = int(time.time()) % 1000
 		self._started_at = None
 		self._last_packet_at = None
 		self._last_error = None
@@ -243,11 +262,37 @@ class AprsService:
 		self._thread.start()
 
 	def send_message(self, destination, message, message_id=None):
-		"""Transmit one addressed APRS message, segmented when necessary."""
+		"""Transmit one addressed APRS message and wait for its ACK or REJ."""
+		message_id = str(message_id) if message_id is not None else self._allocate_message_id()
+		segments = split_aprs_message(message, message_id)
+		ack_key = (destination.upper(), message_id)
+		ack_event = threading.Event()
+		with self._pending_acks_lock:
+			if ack_key in self._pending_acks:
+				raise ValueError(f"APRS message ID {message_id} is already awaiting a response from {destination}")
+			self._pending_acks[ack_key] = {"event": ack_event, "response": None}
+
 		packets = []
-		for segment in split_aprs_message(message, message_id):
-			packets.append(self._send_info(aprs_message_info(destination, segment, message_id)))
-		return packets
+		acknowledgement = None
+		attempts = 0
+		try:
+			for attempts in range(1, RETRIES + 2):
+				for segment in segments:
+					packets.append(self._send_info(aprs_message_info(destination, segment, message_id)))
+				if ack_event.wait(ACK_TIMEOUT_SECONDS):
+					with self._pending_acks_lock:
+						acknowledgement = self._pending_acks[ack_key]["response"]
+					break
+		finally:
+			with self._pending_acks_lock:
+				self._pending_acks.pop(ack_key, None)
+		return AprsSendResult(packets, message_id, attempts, acknowledgement)
+
+	def _allocate_message_id(self):
+		with self._pending_acks_lock:
+			message_id = f"{self._next_message_id:03d}"
+			self._next_message_id = (self._next_message_id + 1) % 1000
+			return message_id
 
 	def send_ack(self, destination, message_id):
 		"""Transmit an APRS acknowledgement for a received message ID."""
@@ -320,6 +365,13 @@ class AprsService:
 		except (IndexError, ValueError) as error:
 			self._report_error(error)
 			return
+		if parsed["type"] in {"ack", "rej"}:
+			ack_key = (packet["source"].upper(), parsed["message_id"])
+			with self._pending_acks_lock:
+				pending_ack = self._pending_acks.get(ack_key)
+				if pending_ack is not None:
+					pending_ack["response"] = parsed["type"]
+					pending_ack["event"].set()
 		if (
 			self.auto_ack
 			and parsed["type"] == "message"

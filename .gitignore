@@ -1,1 +1,6 @@
 messages.jsonl
+modemConfigFiles/*
+logs/*
+__pycache__/*
+*.pyc
+config_secrets.py
