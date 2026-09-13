@@ -88,6 +88,8 @@ class CrossbandRelay:
             path=[],
             on_packet=self._handle_aprs_packet,
             on_error=self._handle_aprs_error,
+            retries=settings.aprs_retries,
+            tx_delay=settings.aprs_tx_delay_seconds,
         )
 
     def start(self):

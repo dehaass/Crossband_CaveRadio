@@ -15,6 +15,14 @@ import re
 import time
 import threading
 
+try:
+	from config import settings
+	DEFAULT_RETRIES = getattr(settings, "aprs_retries", 0)
+	DEFAULT_TX_DELAY = getattr(settings, "aprs_tx_delay_seconds", 1.0)
+except (ImportError, RuntimeError):
+	DEFAULT_RETRIES = 0
+	DEFAULT_TX_DELAY = 1.0
+
 
 KISS_FEND = 0xC0
 KISS_FESC = 0xDB
@@ -25,7 +33,7 @@ DEFAULT_KISS_HOST = "127.0.0.1"
 DEFAULT_KISS_PORT = 8001
 DEFAULT_LISTEN_SECONDS = 30
 APRS_MESSAGE_MAX_LENGTH = 67
-RETRIES = 1
+RETRIES = DEFAULT_RETRIES
 ACK_TIMEOUT_SECONDS = 30
 
 
@@ -208,7 +216,8 @@ class AprsService:
 	"""
 
 	def __init__(self, source, host=DEFAULT_KISS_HOST, port=DEFAULT_KISS_PORT,
-				 path=None, on_packet=None, on_error=None, auto_ack=True):
+				 path=None, on_packet=None, on_error=None, auto_ack=True,
+				 retries=None, tx_delay=None):
 		self.source = source
 		self.host = host
 		self.port = port
@@ -216,6 +225,8 @@ class AprsService:
 		self.on_packet = on_packet
 		self.on_error = on_error
 		self.auto_ack = auto_ack
+		self.retries = DEFAULT_RETRIES if retries is None else retries
+		self.tx_delay = DEFAULT_TX_DELAY if tx_delay is None else tx_delay
 		self._connection = None
 		self._thread = None
 		self._stop_event = threading.Event()
@@ -261,7 +272,7 @@ class AprsService:
 		self._thread = threading.Thread(target=self._receive_loop, name="aprs-receive", daemon=True)
 		self._thread.start()
 
-	def send_message(self, destination, message, message_id=None):
+	def send_message(self, destination, message, message_id=None, retries=None):
 		"""Transmit one addressed APRS message and wait for its ACK or REJ."""
 		message_id = str(message_id) if message_id is not None else self._allocate_message_id()
 		segments = split_aprs_message(message, message_id)
@@ -275,14 +286,23 @@ class AprsService:
 		packets = []
 		acknowledgement = None
 		attempts = 0
+		retry_limit = self.retries if retries is None else retries
 		try:
-			for attempts in range(1, RETRIES + 2):
+			if retry_limit == 0:
+				attempts = 1
 				for segment in segments:
 					packets.append(self._send_info(aprs_message_info(destination, segment, message_id)))
-				if ack_event.wait(ACK_TIMEOUT_SECONDS):
+				if ack_event.wait(self.tx_delay):
 					with self._pending_acks_lock:
 						acknowledgement = self._pending_acks[ack_key]["response"]
-					break
+			else:
+				for attempts in range(1, retry_limit + 2):
+					for segment in segments:
+						packets.append(self._send_info(aprs_message_info(destination, segment, message_id)))
+					if ack_event.wait(ACK_TIMEOUT_SECONDS):
+						with self._pending_acks_lock:
+							acknowledgement = self._pending_acks[ack_key]["response"]
+						break
 		finally:
 			with self._pending_acks_lock:
 				self._pending_acks.pop(ack_key, None)

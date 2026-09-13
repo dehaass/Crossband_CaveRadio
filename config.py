@@ -46,6 +46,8 @@ class Settings:
     kiss_port: int = 8001
     direwolf_executable: str = "direwolf"
     direwolf_config_path: str = os.path.join(PROJECT_ROOT, "modemConfigFiles/direwolf.conf")
+    aprs_retries: int = 0  # Number of retries when waiting for an APRS ACK (0 = assume received, no wait)
+    aprs_tx_delay_seconds: float = 1.5  # Pause after APRS transmission to allow channel clear/turnaround
 
     # --- Soundcard detection (checked with `arecord -l` before starting each modem) ---
     fldigi_soundcard_name: str = "UNIT 2"  # QDX radio's ALSA capture device name
