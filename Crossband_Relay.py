@@ -7,31 +7,24 @@ import dataclasses
 from datetime import datetime
 import json
 import logging
-import os
 import re
-import sys
 import threading
 import time
-import pyfldigi
 
 from aprs_relay import AprsService
 from config import settings
 
 
-from QDX_Fldigi_coms import format_radiomsg, send_radiomsg
-from radiomsg import RadioMsgParser, expected_checksum
+from Modem_App_Control import FldigiController
+from QDX_Fldigi_coms import FldigiReceiver, format_radiomsg
+from radiomsg import expected_checksum
 
 
 SOURCE_CALLSIGN = settings.source_callsign
 APRS_DESTINATION_CALLSIGN = settings.aprs_destination_callsign
-FLDIGI_HOSTNAME = settings.fldigi_hostname
-FLDIGI_PORT = settings.fldigi_port
-FLDIGI_MODEM = settings.fldigi_modem
 KISS_HOSTNAME = settings.kiss_hostname
 KISS_PORT = settings.kiss_port
 POLL_INTERVAL_SECONDS = settings.poll_interval_seconds
-FLDIGI_RX_IDLE_SECONDS = settings.fldigi_rx_idle_seconds
-FLDIGI_RAW_PREVIEW_LIMIT = settings.fldigi_raw_preview_limit
 HEALTH_INTERVAL_SECONDS = settings.health_interval_seconds
 TRAFFIC_LOG_PATH = settings.traffic_log_path
 
@@ -75,18 +68,11 @@ class CrossbandRelay:
         self.log = logging.getLogger("Crossband_Relay")
         self._stop_event = threading.Event()
         self._monitor_thread = None
-        self._fldigi_last_ok = None
         self._fldigi_last_error = None
         self._power_cycle_hook = power_cycle_hook
-        self._radio_parser = RadioMsgParser()
-        self._rx_sn_samples = []
-        self._rx_sn_status = []
-        self._fldigi_raw_text = ""
-        self._fldigi_last_rx_at = None
-        self._fldigi_sn_status = None
-        self._fldigi_sn_value = None
         self._fldigi_transmitting = False
-        self._fldigi = None
+        self._fldigi_controller = FldigiController()
+        self._fldigi_receiver = None
         self._aprs = AprsService(
             source=SOURCE_CALLSIGN,
             host=KISS_HOSTNAME,
@@ -101,13 +87,9 @@ class CrossbandRelay:
         self.log.info("Starting APRS service")
         self._aprs.start()
 
-        self.log.info("Connecting to Fldigi at %s:%d", FLDIGI_HOSTNAME, FLDIGI_PORT)
-        self._fldigi = pyfldigi.Client(hostname=FLDIGI_HOSTNAME, port=FLDIGI_PORT)
-        self.log.info("Fldigi version: %s", self._fldigi.name)
-        if self._fldigi.modem.name != FLDIGI_MODEM:
-            self.log.info("Switching Fldigi modem to %s", FLDIGI_MODEM)
-            self._fldigi.modem.name = FLDIGI_MODEM
-        self._fldigi_last_ok = time.time()
+        self.log.info("Starting Fldigi")
+        client = self._fldigi_controller.start(headless=settings.fldigi_headless)
+        self._fldigi_receiver = FldigiReceiver(client)
         self._fldigi_last_error = None
         if self._monitor_thread is None or not self._monitor_thread.is_alive():
             self._monitor_thread = threading.Thread(
@@ -120,18 +102,15 @@ class CrossbandRelay:
     def health_snapshot(self):
         """Return current APRS, Fldigi, and relay health state."""
         fldigi = {
-            "connected": self._fldigi is not None,
-            "last_ok": self._fldigi_last_ok,
+            "connected": self._fldigi_receiver is not None,
+            "running": self._fldigi_controller.is_running(),
             "last_error": self._fldigi_last_error,
-            "receiving": self._fldigi_sn_value is not None,
             "transmitting": self._fldigi_transmitting,
-            "raw_text": self._fldigi_raw_text,
-            "sn_status": self._fldigi_sn_status,
-            "sn_value": self._fldigi_sn_value,
         }
-        if self._fldigi is not None:
+        if self._fldigi_receiver is not None:
+            fldigi.update(self._fldigi_receiver.health_snapshot())
             try:
-                fldigi["status"] = self._fldigi.main.status1
+                fldigi["status"] = self._fldigi_receiver.client.main.status1
                 fldigi["healthy"] = True
             except Exception as error:
                 fldigi["healthy"] = False
@@ -154,11 +133,11 @@ class CrossbandRelay:
 
     def transmit_radiomsg(self, message, **fields):
         """Transmit RadioMSG while exposing the active TX state to health clients."""
-        if self._fldigi is None:
+        if self._fldigi_receiver is None:
             raise RuntimeError("Fldigi is not connected")
         self._fldigi_transmitting = True
         try:
-            return send_radiomsg(self._fldigi, message, **fields)
+            return self._fldigi_receiver.transmit(message, **fields)
         finally:
             self._fldigi_transmitting = False
 
@@ -180,12 +159,10 @@ class CrossbandRelay:
             self.log.error("Unable to restart APRS: %s", error)
 
     def _restart_fldigi(self):
-        self.log.warning("Restarting Fldigi XML-RPC connection")
+        self.log.warning("Restarting Fldigi")
         try:
-            self._fldigi = pyfldigi.Client(hostname=FLDIGI_HOSTNAME, port=FLDIGI_PORT)
-            if self._fldigi.modem.name != FLDIGI_MODEM:
-                self._fldigi.modem.name = FLDIGI_MODEM
-            self._fldigi_last_ok = time.time()
+            client = self._fldigi_controller.restart(headless=settings.fldigi_headless)
+            self._fldigi_receiver = FldigiReceiver(client)
             self._fldigi_last_error = None
         except Exception as error:
             self._fldigi_last_error = str(error)
@@ -193,41 +170,13 @@ class CrossbandRelay:
 
     def run(self):
         """Poll Fldigi until stop() or Ctrl+C is requested."""
-        if self._fldigi is None:
+        if self._fldigi_receiver is None:
             self.start()
         self.log.info("Crossband relay is listening")
         try:
             while not self._stop_event.is_set():
-                rx_data = self._fldigi.text.get_rx_data()
-                self._fldigi_last_ok = time.time()
-                sn_status = self._read_fldigi_sn()
-                self._fldigi_sn_status = sn_status
-                self._fldigi_sn_value = self._parse_sn_value(sn_status) if sn_status else None
-                if self._fldigi_sn_value is None:
-                    self._fldigi_raw_text = ""
-                if rx_data:
-                    if isinstance(rx_data, bytes):
-                        rx_data = rx_data.decode("utf-8", errors="replace")
-                    if self._fldigi_sn_value is not None:
-                        self._fldigi_last_rx_at = time.time()
-                        self._fldigi_raw_text = (
-                            self._fldigi_raw_text + rx_data
-                        )[-FLDIGI_RAW_PREVIEW_LIMIT:]
-                    if sn_status is not None:
-                        self._rx_sn_status.append(sn_status)
-                        sn_value = self._parse_sn_value(sn_status)
-                        if sn_value is not None:
-                            self._rx_sn_samples.append(sn_value)
-                    self.log.debug("Fldigi RX: %r", rx_data)
-                    messages = self._radio_parser.feed(rx_data)
-                    for index, message in enumerate(messages):
-                        samples = self._rx_sn_samples if index == 0 else []
-                        statuses = self._rx_sn_status if index == 0 else []
-                        self._handle_radio_message(message, samples, statuses)
-                    if messages:
-                        self._fldigi_raw_text = ""
-                        self._rx_sn_samples.clear()
-                        self._rx_sn_status.clear()
+                for message, sn_samples, sn_status in self._fldigi_receiver.poll():
+                    self._handle_radio_message(message, sn_samples, sn_status)
                 time.sleep(POLL_INTERVAL_SECONDS)
         except KeyboardInterrupt:
             self.log.info("Stopping after Ctrl+C")
@@ -237,24 +186,12 @@ class CrossbandRelay:
     def stop(self):
         self._stop_event.set()
         self._aprs.stop()
+        if self._fldigi_receiver is not None:
+            self._fldigi_controller.stop()
+            self._fldigi_receiver = None
         if self._monitor_thread is not None and self._monitor_thread is not threading.current_thread():
             self._monitor_thread.join(timeout=2)
         self._monitor_thread = None
-
-    def _read_fldigi_sn(self):
-        try:
-            status = self._fldigi.main.status1
-            if status is None or not str(status).strip():
-                return None
-            return str(status)
-        except Exception as error:
-            self.log.debug("Unable to read Fldigi S/N status: %s", error)
-            return None
-
-    @staticmethod
-    def _parse_sn_value(status):
-        match = re.search(r"[-+]?\d+(?:\.\d+)?", status)
-        return float(match.group()) if match else None
 
     def _handle_radio_message(self, message, sn_samples=None, sn_status=None):
         log_entry = dataclasses.asdict(message)
@@ -339,7 +276,7 @@ class CrossbandRelay:
             if not fldigi_message:
                 self.log.warning("Ignoring empty APRS M: command")
                 return
-            if self._fldigi is None:
+            if self._fldigi_receiver is None:
                 self.log.error("Unable to relay APRS M: command: Fldigi is not connected")
                 return
             wire_message = format_radiomsg(

@@ -102,7 +102,7 @@ def read_log(limit=100):
 
 def ensure_relay_started():
     with relay_lock:
-        if relay._fldigi is None or not relay._aprs.running:
+        if relay._fldigi_receiver is None or not relay._aprs.running:
             relay.start()
 
 

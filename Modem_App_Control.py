@@ -71,7 +71,11 @@ class FldigiController:
             time.sleep(0.5)
 
     def configure(self, modem=None, frequency_hz=None, squelch_level=None):
-        """Apply modem, frequency, and squelch settings to the running fldigi instance."""
+        """Apply modem, frequency, and squelch settings right after startup.
+
+        For changes while fldigi is already running, use
+        QDX_Fldigi_coms.FldigiReceiver instead.
+        """
         if self.client is None:
             raise RuntimeError("fldigi is not started")
         modem = settings.fldigi_modem if modem is None else modem
@@ -89,6 +93,11 @@ class FldigiController:
 
     def is_running(self):
         return self._app_monitor.is_running()
+
+    def restart(self, headless=True):
+        """Stop and relaunch fldigi, reapplying the configured settings."""
+        self.stop()
+        return self.start(headless=headless)
 
     def stop(self):
         """Gracefully shut down fldigi, falling back to a hard kill if needed."""
