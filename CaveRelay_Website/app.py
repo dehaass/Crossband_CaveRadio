@@ -20,6 +20,9 @@ from relay_control_api import RelayControlClient  # noqa: E402
 OPERATIONS_LOG_PATH = Path(
     os.environ.get("CAVE_RELAY_LOG_PATH", PROJECT_ROOT / "logs" / "cave_relay.jsonl")
 )
+RELAY_LOG_PATH = Path(
+    os.environ.get("RELAY_LOG_PATH", PROJECT_ROOT / "logs" / "relay.log")
+)
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -76,6 +79,19 @@ def read_operations_log(limit=500, level=None, source=None):
     return entries
 
 
+def read_relay_log(limit_lines=None):
+    if not RELAY_LOG_PATH.exists():
+        return ""
+    try:
+        text = RELAY_LOG_PATH.read_text(encoding="utf-8", errors="replace")
+        if limit_lines:
+            lines = text.splitlines()
+            return "\n".join(lines[-limit_lines:])
+        return text
+    except OSError:
+        return ""
+
+
 configure_operations_logging()
 
 app = Flask(__name__)
@@ -130,6 +146,29 @@ def operation_logs():
     level = str(request.args.get("level", "")).upper() or None
     source = str(request.args.get("source", "")).strip() or None
     return jsonify(read_operations_log(limit, level, source))
+
+
+@app.get("/api/relay_log")
+def relay_log():
+    try:
+        limit = request.args.get("limit")
+        limit_lines = int(limit) if limit and limit.isdigit() else None
+    except ValueError:
+        limit_lines = None
+    content = read_relay_log(limit_lines=limit_lines)
+    return jsonify({
+        "content": content,
+        "lines": len(content.splitlines()) if content else 0,
+        "bytes": len(content.encode("utf-8")),
+        "path": str(RELAY_LOG_PATH.resolve()),
+        "exists": RELAY_LOG_PATH.exists(),
+    })
+
+
+@app.get("/api/relay_log/raw")
+def relay_log_raw():
+    content = read_relay_log()
+    return content, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 @app.get("/api/health")

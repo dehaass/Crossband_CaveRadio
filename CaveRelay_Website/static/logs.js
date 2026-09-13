@@ -1,6 +1,8 @@
 const $ = (selector) => document.querySelector(selector);
 let logEntries = [];
+let relayLogContent = '';
 const knownSources = new Set();
+let activeTab = 'activity';
 // Offset (ms) between the server's clock and this browser's clock, so the
 // displayed "system time" tracks the server (which stamps the log entries),
 // not whatever time the client happens to have set.
@@ -8,6 +10,25 @@ let serverTimeOffsetMs = 0;
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, (character) => ({ '&':'&amp;', '<':'&gt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[character]));
+}
+
+function switchTab(tab) {
+  activeTab = tab;
+  const isActivity = tab === 'activity';
+  $('#tab-activity').classList.toggle('active', isActivity);
+  $('#tab-activity').setAttribute('aria-selected', isActivity ? 'true' : 'false');
+  $('#tab-relay').classList.toggle('active', !isActivity);
+  $('#tab-relay').setAttribute('aria-selected', !isActivity ? 'true' : 'false');
+  $('#view-activity').hidden = !isActivity;
+  $('#view-relay').hidden = isActivity;
+  window.location.hash = isActivity ? '#activity' : '#relay';
+  if (isActivity) {
+    renderLogs();
+    refreshLogs().catch(showError);
+  } else {
+    renderRelayLog();
+    refreshRelayLog().catch(showRelayError);
+  }
 }
 
 function populateSources(entries) {
@@ -31,6 +52,7 @@ function dateRangeBounds() {
 }
 
 function renderLogs() {
+  if (activeTab !== 'activity') return;
   const search = $('#log-search').value.trim().toLowerCase();
   const levels = checkedLevels();
   const { start } = dateRangeBounds();
@@ -63,6 +85,45 @@ async function refreshLogs() {
   $('#last-checked').textContent = `Last checked: ${new Date().toLocaleTimeString()}`;
 }
 
+function renderRelayLog() {
+  if (activeTab !== 'relay') return;
+  const search = $('#relay-log-search').value.trim().toLowerCase();
+  const output = $('#relay-log-output');
+  const wrap = $('#relay-log-wrap');
+  
+  if (!relayLogContent) {
+    output.textContent = 'relay.log is empty or not yet created.';
+    $('#log-count').textContent = '0 lines';
+    return;
+  }
+
+  const lines = relayLogContent.split('\n');
+  const filtered = search ? lines.filter((line) => line.toLowerCase().includes(search)) : lines;
+  $('#log-count').textContent = `${filtered.length} line${filtered.length === 1 ? '' : 's'}${search ? ` (of ${lines.length})` : ''}`;
+  output.textContent = filtered.join('\n') || 'No matching lines in relay.log.';
+  
+  if ($('#relay-autoscroll').checked) {
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+}
+
+async function refreshRelayLog() {
+  const response = await fetch(`/api/relay_log?ts=${Date.now()}`, { cache: 'no-store' });
+  if (!response.ok) throw new Error('Unable to load relay.log');
+  const data = await response.json();
+  relayLogContent = data.content || '';
+  renderRelayLog();
+  $('#last-checked').textContent = `Last checked: ${new Date().toLocaleTimeString()}`;
+}
+
+async function refreshActive() {
+  if (activeTab === 'activity') {
+    await refreshLogs();
+  } else {
+    await refreshRelayLog();
+  }
+}
+
 function updateClock() {
   const now = new Date(Date.now() + serverTimeOffsetMs);
   const pad = (value) => String(value).padStart(2, '0');
@@ -83,19 +144,41 @@ async function syncServerTime() {
   updateClock();
 }
 
-$('#refresh-button').addEventListener('click', () => refreshLogs().catch(showError));
+function showError(error) {
+  $('#log-body').innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(error.message)}</td></tr>`;
+}
+
+function showRelayError(error) {
+  $('#relay-log-output').textContent = `Error: ${error.message}`;
+}
+
+$('#tab-activity').addEventListener('click', () => switchTab('activity'));
+$('#tab-relay').addEventListener('click', () => switchTab('relay'));
+$('#refresh-button').addEventListener('click', () => refreshActive().catch(activeTab === 'activity' ? showError : showRelayError));
 $('#log-search').addEventListener('input', renderLogs);
 $('#log-source').addEventListener('change', () => refreshLogs().catch(showError));
 document.querySelectorAll('#log-level-filters input').forEach((checkbox) => checkbox.addEventListener('change', renderLogs));
 $('#log-since').addEventListener('change', renderLogs);
 
-function showError(error) {
-  $('#log-body').innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(error.message)}</td></tr>`;
-}
+$('#relay-log-search').addEventListener('input', renderRelayLog);
+$('#relay-autoscroll').addEventListener('change', () => {
+  if ($('#relay-autoscroll').checked) {
+    $('#relay-log-wrap').scrollTop = $('#relay-log-wrap').scrollHeight;
+  }
+});
+$('#relay-wrap').addEventListener('change', () => {
+  $('#relay-log-output').classList.toggle('wrap', $('#relay-wrap').checked);
+});
 
 updateClock();
 setInterval(updateClock, 1000);
 syncServerTime().catch(() => {});
 setInterval(() => syncServerTime().catch(() => {}), 30000);
-refreshLogs().catch(showError);
-setInterval(() => refreshLogs().catch(showError), 10000);
+
+if (window.location.hash === '#relay') {
+  switchTab('relay');
+} else {
+  switchTab('activity');
+}
+
+setInterval(() => refreshActive().catch(() => {}), 6000);

@@ -17,29 +17,60 @@
 
   <main class="shell log-viewer-shell">
     <section class="panel log-panel">
-      <div class="panel-head"><div><p class="eyebrow">PERSISTED JSONL</p><h2>Application activity</h2></div><div class="panel-status"><span class="table-count" id="log-count">0 records</span><button class="icon-button" id="refresh-button" title="Refresh system logs" aria-label="Refresh system logs">↻</button></div></div>
-      <div class="log-clock-bar"><span class="eyebrow">System time</span><span class="live-clock" id="live-clock">--:--:--</span></div>
-      <div class="table-tools log-viewer-tools">
-        <input id="log-search" type="search" placeholder="Search log messages">
-        <div class="log-level-filters" id="log-level-filters">
-          <label><input type="checkbox" value="DEBUG" checked>Debug</label>
-          <label><input type="checkbox" value="INFO" checked>Info</label>
-          <label><input type="checkbox" value="WARNING" checked>Warning</label>
-          <label><input type="checkbox" value="ERROR" checked>Error</label>
-          <label><input type="checkbox" value="CRITICAL" checked>Critical</label>
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">LOG VIEWER</p>
+          <div class="log-tab-group" role="tablist">
+            <button class="log-tab active" id="tab-activity" role="tab" aria-selected="true" type="button">Structured activity</button>
+            <button class="log-tab" id="tab-relay" role="tab" aria-selected="false" type="button">Relay backend (relay.log)</button>
+          </div>
         </div>
-        <select id="log-source"><option value="">All sources</option></select>
-        <select id="log-since">
-          <option value="">All time</option>
-          <option value="300000">Last 5 min</option>
-          <option value="600000">Last 10 min</option>
-          <option value="1800000">Last 30 min</option>
-          <option value="3600000">Last 1 hr</option>
-          <option value="21600000">Last 6 hr</option>
-          <option value="86400000">Last 24 hr</option>
-        </select>
+        <div class="panel-status">
+          <span class="table-count" id="log-count">0 records</span>
+          <button class="icon-button" id="refresh-button" title="Refresh system logs" aria-label="Refresh system logs">↻</button>
+        </div>
       </div>
-      <div class="log-table-wrap log-viewer-table"><table><thead><tr><th>Timestamp</th><th>Level</th><th>Source</th><th>Message</th></tr></thead><tbody id="log-body"><tr><td colspan="4" class="empty">Loading system logs...</td></tr></tbody></table></div>
+      <div class="log-clock-bar"><span class="eyebrow">System time</span><span class="live-clock" id="live-clock">--:--:--</span></div>
+
+      <!-- Structured Activity (JSONL) View -->
+      <div id="view-activity">
+        <div class="table-tools log-viewer-tools">
+          <input id="log-search" type="search" placeholder="Search log messages">
+          <div class="log-level-filters" id="log-level-filters">
+            <label><input type="checkbox" value="DEBUG" checked>Debug</label>
+            <label><input type="checkbox" value="INFO" checked>Info</label>
+            <label><input type="checkbox" value="WARNING" checked>Warning</label>
+            <label><input type="checkbox" value="ERROR" checked>Error</label>
+            <label><input type="checkbox" value="CRITICAL" checked>Critical</label>
+          </div>
+          <select id="log-source"><option value="">All sources</option></select>
+          <select id="log-since">
+            <option value="">All time</option>
+            <option value="300000">Last 5 min</option>
+            <option value="600000">Last 10 min</option>
+            <option value="1800000">Last 30 min</option>
+            <option value="3600000">Last 1 hr</option>
+            <option value="21600000">Last 6 hr</option>
+            <option value="86400000">Last 24 hr</option>
+          </select>
+        </div>
+        <div class="log-table-wrap log-viewer-table"><table><thead><tr><th>Timestamp</th><th>Level</th><th>Source</th><th>Message</th></tr></thead><tbody id="log-body"><tr><td colspan="4" class="empty">Loading system logs...</td></tr></tbody></table></div>
+      </div>
+
+      <!-- Raw Relay Console (relay.log) View -->
+      <div id="view-relay" hidden>
+        <div class="table-tools relay-log-tools">
+          <input id="relay-log-search" type="search" placeholder="Search relay.log output...">
+          <div class="relay-log-options">
+            <label><input type="checkbox" id="relay-autoscroll" checked>Auto-scroll to bottom</label>
+            <label><input type="checkbox" id="relay-wrap">Wrap lines</label>
+          </div>
+          <a class="page-link download-link" href="{{ url_for('relay_log_raw') }}" target="_blank" download="relay.log" title="Download raw relay.log">Download raw</a>
+        </div>
+        <div class="relay-log-wrap" id="relay-log-wrap">
+          <pre class="relay-log-output" id="relay-log-output">Loading relay.log...</pre>
+        </div>
+      </div>
     </section>
   </main>
   <script src="{{ url_for('static', filename='logs.js') }}"></script>
