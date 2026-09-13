@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import sys
-import threading
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -15,7 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Crossband_Relay import CrossbandRelay, TRAFFIC_LOG_PATH, write_traffic_log  # noqa: E402
+from config import settings  # noqa: E402
+from relay_control_api import RelayControlClient  # noqa: E402
 
 OPERATIONS_LOG_PATH = Path(
     os.environ.get("CAVE_RELAY_LOG_PATH", PROJECT_ROOT / "logs" / "cave_relay.jsonl")
@@ -76,14 +76,13 @@ def read_operations_log(limit=500, level=None, source=None):
 configure_operations_logging()
 
 app = Flask(__name__)
-relay = CrossbandRelay()
-relay_lock = threading.Lock()
+relay_client = RelayControlClient()
 startup_log = logging.getLogger("CaveRelay_Website")
 
 
 def read_log(limit=100):
     entries = []
-    log_path = Path(TRAFFIC_LOG_PATH)
+    log_path = Path(settings.traffic_log_path)
     if not log_path.exists():
         return entries
     try:
@@ -98,25 +97,6 @@ def read_log(limit=100):
         if len(entries) >= limit:
             break
     return entries
-
-
-def ensure_relay_started():
-    with relay_lock:
-        if relay._fldigi_receiver is None or not relay._aprs.running:
-            relay.start()
-
-
-def initialize_relay():
-    """Start radio services independently of the first web request."""
-    try:
-        relay.run()
-        startup_log.info("APRS and Fldigi services started")
-    except Exception as error:
-        relay._fldigi_last_error = str(error)
-        startup_log.exception("Unable to start APRS/Fldigi services at website startup")
-
-
-threading.Thread(target=initialize_relay, name="relay-startup", daemon=True).start()
 
 
 @app.get("/")
@@ -151,7 +131,10 @@ def operation_logs():
 
 @app.get("/api/health")
 def health():
-    return jsonify(relay.health_snapshot())
+    try:
+        return jsonify(relay_client.health())
+    except ConnectionError as error:
+        return jsonify({"error": str(error)}), 503
 
 
 @app.post("/api/send/aprs")
@@ -163,24 +146,11 @@ def send_aprs():
     if not destination or not message:
         return jsonify({"error": "Destination and message are required."}), 400
     try:
-        ensure_relay_started()
-        result = relay._aprs.send_message(destination, message, message_id=message_id or None)
-    except (OSError, RuntimeError, ValueError) as error:
+        result = relay_client.send_aprs(destination, message, message_id=message_id or None)
+    except ConnectionError as error:
         return jsonify({"error": str(error)}), 503
-    write_traffic_log(
-        {
-            "transport": "aprs_tx",
-            "source": relay._aprs.source,
-            "destination": destination,
-            "message": message,
-            "message_id": result.message_id,
-            "attempts": result.attempts,
-            "acknowledgement": result.acknowledgement,
-            "acknowledged": result.acknowledged,
-        },
-        startup_log,
-    )
-    return jsonify({"ok": True, "packets": len(result), "message_id": result.message_id, "attempts": result.attempts, "acknowledged": result.acknowledged})
+    status = 200 if result.get("ok") else 503
+    return jsonify(result), status
 
 
 @app.post("/api/send/fldigi")
@@ -191,16 +161,11 @@ def send_fldigi():
     if not message:
         return jsonify({"error": "Message is required."}), 400
     try:
-        ensure_relay_started()
-        wire_message = relay.transmit_radiomsg(
-            message,
-            from_call="SURF",
-            to_call="*",
-            via=via,
-        )
-    except (OSError, RuntimeError, ValueError) as error:
+        result = relay_client.send_fldigi(message, via=via)
+    except ConnectionError as error:
         return jsonify({"error": str(error)}), 503
-    return jsonify({"ok": True, "wire_message": wire_message})
+    status = 200 if result.get("ok") else 503
+    return jsonify(result), status
 
 
 if __name__ == "__main__":

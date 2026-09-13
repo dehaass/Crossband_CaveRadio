@@ -51,6 +51,10 @@ class Settings:
     fldigi_raw_preview_limit: int = 4000
     health_interval_seconds: int = 300
 
+    # --- Relay control API (between Crossband_Relay.py and the website) ---
+    relay_api_host: str = "127.0.0.1"
+    relay_api_port: int = 5050
+
     # --- Logging ---
     traffic_log_path: str = os.path.join(PROJECT_ROOT, "messages.jsonl")
 

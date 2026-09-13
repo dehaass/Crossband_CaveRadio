@@ -18,6 +18,7 @@ from config import settings
 from Modem_App_Control import DirewolfController, FldigiController
 from QDX_Fldigi_coms import FldigiReceiver, format_radiomsg
 from radiomsg import expected_checksum
+from relay_control_api import RelayControlServer
 
 
 SOURCE_CALLSIGN = settings.source_callsign
@@ -145,6 +146,42 @@ class CrossbandRelay:
             return self._fldigi_receiver.transmit(message, **fields)
         finally:
             self._fldigi_transmitting = False
+
+    def send_aprs_message(self, destination, message, message_id=None):
+        """Send and log an APRS message, for use by the control API or website."""
+        result = self._aprs.send_message(destination, message, message_id=message_id)
+        write_traffic_log(
+            {
+                "transport": "aprs_tx",
+                "source": SOURCE_CALLSIGN,
+                "destination": destination,
+                "message": message,
+                **aprs_delivery_fields(result),
+            },
+            self.log,
+        )
+        return result
+
+    def send_fldigi_message(self, message, via=None):
+        """Transmit and log a RadioMSG message, for use by the control API or website."""
+        wire_message = self.transmit_radiomsg(
+            message,
+            from_call=settings.radiomsg_source_callsign,
+            to_call="*",
+            via=via,
+        )
+        write_traffic_log(
+            {
+                "transport": "fldigi_tx",
+                "source": settings.radiomsg_source_callsign,
+                "destination": "*",
+                "via": via,
+                "message": message,
+                "raw": wire_message,
+            },
+            self.log,
+        )
+        return wire_message
 
     def _health_monitor_loop(self):
         while not self._stop_event.wait(HEALTH_INTERVAL_SECONDS):
@@ -408,7 +445,13 @@ class CrossbandRelay:
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s : %(message)s")
-    CrossbandRelay().run()
+    relay = CrossbandRelay()
+    control_server = RelayControlServer(relay)
+    control_server.start()
+    try:
+        relay.run()
+    finally:
+        control_server.stop()
 
 
 if __name__ == "__main__":
