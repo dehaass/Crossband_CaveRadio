@@ -137,25 +137,26 @@ class RelayControlClient:
         path = "/sn_history" if not window_seconds else f"/sn_history?window={window_seconds}"
         return self._request("GET", path)
 
-    def send_aprs(self, destination, message, message_id=None):
+    def send_aprs(self, destination, message, message_id=None, timeout=75):
         return self._request("POST", "/send/aprs", {
             "destination": destination, "message": message, "message_id": message_id,
-        })
+        }, timeout=timeout)
 
-    def send_fldigi(self, message, via=None):
-        return self._request("POST", "/send/fldigi", {"message": message, "via": via})
+    def send_fldigi(self, message, via=None, timeout=60):
+        return self._request("POST", "/send/fldigi", {"message": message, "via": via}, timeout=timeout)
 
-    def _request(self, method, path, payload=None):
+    def _request(self, method, path, payload=None, timeout=None):
+        request_timeout = self.timeout if timeout is None else timeout
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(f"http://{self.host}:{self.port}{path}", data=data, method=method)
         if data is not None:
             request.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
             return json.loads(error.read())
-        except urllib.error.URLError as error:
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise ConnectionError(
                 f"Unable to reach relay control API at {self.host}:{self.port}: {error}"
             ) from error

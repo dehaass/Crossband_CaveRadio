@@ -136,7 +136,7 @@ def operation_logs():
 def health():
     try:
         return jsonify(relay_client.health())
-    except ConnectionError as error:
+    except (ConnectionError, TimeoutError, OSError) as error:
         return jsonify({"error": str(error)}), 503
 
 
@@ -148,7 +148,7 @@ def sn_history():
         window_seconds = None
     try:
         return jsonify(relay_client.sn_history(window_seconds))
-    except ConnectionError as error:
+    except (ConnectionError, TimeoutError, OSError) as error:
         return jsonify({"error": str(error)}), 503
 
 
@@ -169,7 +169,7 @@ def send_aprs():
         return jsonify({"error": "Destination and message are required."}), 400
     try:
         result = relay_client.send_aprs(destination, message, message_id=message_id or None)
-    except ConnectionError as error:
+    except (ConnectionError, TimeoutError, OSError) as error:
         return jsonify({"error": str(error)}), 503
     status = 200 if result.get("ok") else 503
     return jsonify(result), status
@@ -184,7 +184,7 @@ def send_fldigi():
         return jsonify({"error": "Message is required."}), 400
     try:
         result = relay_client.send_fldigi(message, via=via)
-    except ConnectionError as error:
+    except (ConnectionError, TimeoutError, OSError) as error:
         return jsonify({"error": str(error)}), 503
     status = 200 if result.get("ok") else 503
     return jsonify(result), status

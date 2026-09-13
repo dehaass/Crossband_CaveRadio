@@ -320,7 +320,12 @@ async function submitForm(event, endpoint, resultSelector, fields) {
     const response = await fetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Request failed');
-    setResult(resultSelector, result.packets ? `Sent ${result.packets} APRS packet${result.packets === 1 ? '' : 's'}.` : 'Transmitted.');
+    if (result.packets) {
+      const ackText = result.acknowledged ? ' (ACK received)' : ' (unacknowledged)';
+      setResult(resultSelector, `Sent ${result.packets} APRS packet${result.packets === 1 ? '' : 's'}${ackText}.`);
+    } else {
+      setResult(resultSelector, 'Transmitted.');
+    }
     form.reset();
     await refresh();
   } catch (error) {

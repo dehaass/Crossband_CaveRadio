@@ -7,6 +7,7 @@ import dataclasses
 from datetime import datetime
 import json
 import logging
+import queue
 import re
 import threading
 import time
@@ -69,6 +70,10 @@ class CrossbandRelay:
         self.log = logging.getLogger("Crossband_Relay")
         self._stop_event = threading.Event()
         self._monitor_thread = None
+        self._aprs_worker_thread = None
+        self._aprs_queue = queue.Queue()
+        self._processed_aprs_ids = {}
+        self._processed_aprs_lock = threading.Lock()
         self._fldigi_last_error = None
         self._direwolf_last_error = None
         self._power_cycle_hook = power_cycle_hook
@@ -112,6 +117,13 @@ class CrossbandRelay:
                 daemon=True,
             )
             self._monitor_thread.start()
+        if self._aprs_worker_thread is None or not self._aprs_worker_thread.is_alive():
+            self._aprs_worker_thread = threading.Thread(
+                target=self._aprs_command_worker_loop,
+                name="aprs-command-worker",
+                daemon=True,
+            )
+            self._aprs_worker_thread.start()
 
     def health_snapshot(self):
         """Return current APRS, Fldigi, and relay health state."""
@@ -248,6 +260,8 @@ class CrossbandRelay:
 
     def stop(self):
         self._stop_event.set()
+        if self._aprs_queue is not None:
+            self._aprs_queue.put(None)
         self._aprs.stop()
         self._direwolf_controller.stop()
         if self._fldigi_receiver is not None:
@@ -256,6 +270,9 @@ class CrossbandRelay:
         if self._monitor_thread is not None and self._monitor_thread is not threading.current_thread():
             self._monitor_thread.join(timeout=2)
         self._monitor_thread = None
+        if self._aprs_worker_thread is not None and self._aprs_worker_thread is not threading.current_thread():
+            self._aprs_worker_thread.join(timeout=2)
+        self._aprs_worker_thread = None
 
     def _handle_radio_message(self, message, sn_samples=None, sn_status=None):
         log_entry = dataclasses.asdict(message)
@@ -330,7 +347,49 @@ class CrossbandRelay:
         if parsed.get("to", "").upper() != SOURCE_CALLSIGN.upper():
             return
 
+        message_id = parsed.get("message_id")
+        if message_id is not None:
+            now = time.time()
+            dedup_key = (packet["source"].upper(), str(message_id))
+            with self._processed_aprs_lock:
+                expired = [k for k, timestamp in self._processed_aprs_ids.items() if now - timestamp > 300]
+                for k in expired:
+                    del self._processed_aprs_ids[k]
+
+                if dedup_key in self._processed_aprs_ids:
+                    self.log.info(
+                        "Ignoring duplicate APRS message %s from %s (already processed)",
+                        message_id,
+                        packet["source"],
+                    )
+                    return
+                self._processed_aprs_ids[dedup_key] = now
+
+        self._aprs_queue.put(packet)
+
+    def _aprs_command_worker_loop(self):
+        while not self._stop_event.is_set():
+            try:
+                packet = self._aprs_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if packet is None:
+                break
+            try:
+                self._process_aprs_command(packet)
+            except Exception as error:
+                self.log.error("Error processing APRS command from %s: %s", packet.get("source"), error)
+            finally:
+                self._aprs_queue.task_done()
+
+    def _process_aprs_command(self, packet):
+        parsed = packet["parsed"]
+        source = packet["source"]
         command = parsed.get("message", "").strip()
+
+        # Turnaround delay so the auto-ack frame finishes transmitting on RF
+        time.sleep(0.5)
+
         if command.upper().startswith("M:"):
             fldigi_message = command[2:].strip()
             via_match = re.search(r"\s+V:\s*([A-Za-z0-9_-]+)\s*$", fldigi_message, re.IGNORECASE)
@@ -338,7 +397,7 @@ class CrossbandRelay:
             if via_match:
                 fldigi_message = fldigi_message[:via_match.start()].rstrip()
             if not fldigi_message:
-                self.log.warning("Ignoring empty APRS M: command")
+                self.log.warning("Ignoring empty APRS M: command from %s", source)
                 return
             if self._fldigi_receiver is None:
                 self.log.error("Unable to relay APRS M: command: Fldigi is not connected")
@@ -354,21 +413,22 @@ class CrossbandRelay:
             )
             acknowledgement = f"Sending RadioMSG: {readable_message}"
             try:
-                result = self._aprs.send_message(packet["source"], acknowledgement)
+                result = self._aprs.send_message(source, acknowledgement)
             except (RuntimeError, OSError, ValueError) as error:
-                self.log.error("Unable to acknowledge APRS M: command: %s", error)
-                return
-            write_traffic_log(
-                {
-                    "transport": "aprs_tx",
-                    "source": SOURCE_CALLSIGN,
-                    "destination": packet["source"],
-                    "command": command,
-                    "message": acknowledgement,
-                    **aprs_delivery_fields(result),
-                },
-                self.log,
-            )
+                self.log.error("Unable to acknowledge APRS M: command to %s: %s", source, error)
+                result = None
+            if result is not None:
+                write_traffic_log(
+                    {
+                        "transport": "aprs_tx",
+                        "source": SOURCE_CALLSIGN,
+                        "destination": source,
+                        "command": command,
+                        "message": acknowledgement,
+                        **aprs_delivery_fields(result),
+                    },
+                    self.log,
+                )
             try:
                 wire_message = self.transmit_radiomsg(
                     fldigi_message,
@@ -404,19 +464,18 @@ class CrossbandRelay:
                 response = f"APRS:{'OK' if aprs_healthy else 'FAIL'} Fldigi:{'OK' if fldigi_healthy else 'FAIL'}"
             try:
                 result = self._aprs.send_message(
-                    APRS_DESTINATION_CALLSIGN,
+                    source,
                     response,
-                    message_id=parsed.get("message_id"),
                 )
             except (RuntimeError, OSError, ValueError) as error:
-                self.log.error("Unable to send APRS health response: %s", error)
+                self.log.error("Unable to send APRS health response to %s: %s", source, error)
                 return
-            self.log.info("Returned health status to APRS %s: %s", APRS_DESTINATION_CALLSIGN, response)
+            self.log.info("Returned health status to APRS %s: %s", source, response)
             write_traffic_log(
                 {
                     "transport": "aprs_tx",
                     "source": SOURCE_CALLSIGN,
-                    "destination": APRS_DESTINATION_CALLSIGN,
+                    "destination": source,
                     "command": command,
                     "message": response,
                     **aprs_delivery_fields(result),
@@ -438,19 +497,18 @@ class CrossbandRelay:
 
         try:
             result = self._aprs.send_message(
-                APRS_DESTINATION_CALLSIGN,
+                source,
                 response,
-                message_id=parsed.get("message_id"),
             )
         except (RuntimeError, OSError, ValueError) as error:
-            self.log.error("Unable to send APRS command response: %s", error)
+            self.log.error("Unable to send APRS command response to %s: %s", source, error)
             return
-        self.log.info("Returned Fldigi message %d to APRS %s", message_number, APRS_DESTINATION_CALLSIGN)
+        self.log.info("Returned Fldigi message %d to APRS %s", message_number, source)
         write_traffic_log(
             {
                 "transport": "aprs_tx",
                 "source": SOURCE_CALLSIGN,
-                "destination": APRS_DESTINATION_CALLSIGN,
+                "destination": source,
                 "command": command,
                 "message": response,
                 **aprs_delivery_fields(result),
