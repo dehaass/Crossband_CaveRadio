@@ -129,6 +129,12 @@ class CrossbandRelay:
             "aprs": aprs,
         }
 
+    def sn_history_snapshot(self, window_seconds=None):
+        """Recent S/N samples for the modem noise graph, if fldigi is connected."""
+        if self._fldigi_receiver is None:
+            return []
+        return self._fldigi_receiver.sn_history_snapshot(window_seconds)
+
     def power_cycle(self, subsystem):
         """Invoke the configured hardware power-cycle hook for a subsystem."""
         if self._power_cycle_hook is None:

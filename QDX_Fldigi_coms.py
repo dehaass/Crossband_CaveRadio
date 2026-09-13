@@ -7,6 +7,8 @@ import re
 import sys
 import time
 import logging
+from collections import deque
+
 import pyfldigi
 
 
@@ -17,6 +19,14 @@ FLDIGI_HOSTNAME = settings.fldigi_hostname
 FLDIGI_PORT = settings.fldigi_port
 MODEM_NAME = settings.fldigi_modem
 POLL_INTERVAL_SECONDS = settings.poll_interval_seconds
+
+# Bounds how much S/N history is kept in memory, regardless of what window a
+# client later asks for; the dashboard graph only offers up to 30 minutes.
+SN_HISTORY_MAX_SECONDS = 1800
+
+# Sentinel S/N value recorded (and understood by the dashboard graph) when
+# fldigi has no reading, representing an effectively dead/no-signal channel.
+NO_SIGNAL_SN = -60.0
 
 SOURCE_CALLSIGN_RADIOMSG = settings.radiomsg_source_callsign # name used for transmitting RadioMSG style messages through fldigi.
 
@@ -79,8 +89,10 @@ class FldigiReceiver:
         self.log = logging.getLogger("QDX_Fldigi_coms")
         self._parser = RadioMsgParser()
         self._raw_text = ""
+        self._raw_chunks = deque()
         self._sn_samples = []
         self._sn_status = []
+        self._sn_history = deque()
         self.last_rx_at = None
         self.sn_status = None
         self.sn_value = None
@@ -93,6 +105,9 @@ class FldigiReceiver:
         self.sn_value = self._parse_sn_value(status) if status else None
         if self.sn_value is None:
             self._raw_text = ""
+        # Record a floor value when there's no S/N reading, so the history graph
+        # visibly drops instead of just freezing on the last received value.
+        self._record_sn_history(self.sn_value if self.sn_value is not None else NO_SIGNAL_SN)
         if not rx_data:
             return []
 
@@ -101,6 +116,8 @@ class FldigiReceiver:
         if self.sn_value is not None:
             self.last_rx_at = time.time()
             self._raw_text = (self._raw_text + rx_data)[-settings.fldigi_raw_preview_limit:]
+            self._raw_chunks.append((self.sn_value, rx_data))
+            self._trim_raw_chunks()
         if status is not None:
             self._sn_status.append(status)
             value = self._parse_sn_value(status)
@@ -116,6 +133,7 @@ class FldigiReceiver:
             results.append((message, list(samples), list(statuses)))
         if messages:
             self._raw_text = ""
+            self._raw_chunks.clear()
             self._sn_samples.clear()
             self._sn_status.clear()
         return results
@@ -134,6 +152,34 @@ class FldigiReceiver:
     def _parse_sn_value(status):
         match = re.search(r"[-+]?\d+(?:\.\d+)?", status)
         return float(match.group()) if match else None
+
+    def _record_sn_history(self, value):
+        now = time.time()
+        self._sn_history.append((now, value))
+        cutoff = now - SN_HISTORY_MAX_SECONDS
+        while self._sn_history and self._sn_history[0][0] < cutoff:
+            self._sn_history.popleft()
+
+    def sn_history_snapshot(self, window_seconds=None):
+        """Return recent (timestamp, S/N) samples, oldest first, for graphing."""
+        if window_seconds:
+            cutoff = time.time() - window_seconds
+            samples = (item for item in self._sn_history if item[0] >= cutoff)
+        else:
+            samples = self._sn_history
+        return [{"t": timestamp, "sn": value} for timestamp, value in samples]
+
+    def _trim_raw_chunks(self):
+        """Keep only as many raw chunks as fit within the raw-preview character limit."""
+        total = sum(len(text) for _, text in self._raw_chunks)
+        while total > settings.fldigi_raw_preview_limit and len(self._raw_chunks) > 1:
+            _, text = self._raw_chunks.popleft()
+            total -= len(text)
+
+    def raw_chunks_snapshot(self):
+        """Raw decode text paired with the S/N reading at arrival, so a display-only
+        squelch can filter noisy characters without touching fldigi's own squelch."""
+        return [{"sn": sn, "text": text} for sn, text in self._raw_chunks]
 
     def set_modem(self, name):
         """Change the active modem while fldigi is running."""
@@ -156,6 +202,7 @@ class FldigiReceiver:
         return {
             "receiving": self.sn_value is not None,
             "raw_text": self._raw_text,
+            "raw_chunks": self.raw_chunks_snapshot(),
             "sn_status": self.sn_status,
             "sn_value": self.sn_value,
         }

@@ -16,7 +16,7 @@ function updateHealthBadge(selector, ok) {
 }
 
 async function refresh() {
-  await Promise.all([refreshHealth(), refreshMessages()]);
+  await Promise.all([refreshHealth(), refreshMessages(), refreshSnHistory()]);
 }
 
 async function refreshHealth() {
@@ -36,7 +36,8 @@ async function refreshHealth() {
   const receiveBadge = $('#fldigi-receive-badge');
   receiveBadge.className = `health-badge ${transmitting ? 'transmitting' : (receiving ? 'offline' : 'online')}`;
   receiveBadge.innerHTML = `<span class="status-dot ${transmitting ? 'transmit' : (receiving ? 'bad' : 'good')}"></span>${transmitting ? 'TRANSMITTING' : (receiving ? 'MESSAGE?' : 'LISTENING')}`;
-  $('#fldigi-raw-text').textContent = health.fldigi?.raw_text || 'No decoded characters currently arriving.';
+  latestRawChunks = health.fldigi?.raw_chunks || [];
+  renderRawPreview();
   $('#aprs-status').textContent = aprsOk ? 'READY' : 'OFFLINE';
   $('#aprs-detail').textContent = aprsOk ? `${health.aprs.host}:${health.aprs.port}` : (health.aprs.last_error || 'KISS TCP status');
   $('#last-checked').textContent = `Last checked: ${new Date().toLocaleTimeString()}`;
@@ -49,6 +50,132 @@ async function refreshMessages() {
   allMessages = messages;
   updateSuggestions(messages);
   renderLogs();
+}
+
+let latestRawChunks = [];
+
+function syncRawSquelch(value) {
+  const clamped = Math.min(100, Math.max(-30, Math.round(Number(value) || 0)));
+  $('#raw-squelch').value = clamped;
+  $('#raw-squelch-number').value = clamped;
+  renderRawPreview();
+}
+
+function renderRawPreview() {
+  const threshold = Number($('#raw-squelch').value);
+  if (!latestRawChunks.length) {
+    $('#fldigi-raw-text').textContent = 'No decoded characters currently arriving.';
+    return;
+  }
+  // Display-only squelch: filters which already-decoded chunks are shown by
+  // their S/N, independent of fldigi's own (possibly very low) squelch setting.
+  const filtered = latestRawChunks.filter((chunk) => (chunk.sn ?? 0) >= threshold).map((chunk) => chunk.text).join('');
+  $('#fldigi-raw-text').textContent = filtered || 'No characters above the current display squelch.';
+}
+
+let snHistory = [];
+// Matches QDX_Fldigi_coms.NO_SIGNAL_SN: the floor value recorded when fldigi has no S/N reading.
+const NO_SIGNAL_SN = -60;
+
+async function refreshSnHistory() {
+  const windowSeconds = Number($('#sn-window').value);
+  const response = await fetch(`/api/sn_history?window=${windowSeconds}&ts=${Date.now()}`, { cache: 'no-store' });
+  if (!response.ok) return;
+  snHistory = await response.json();
+  updateSignalBadge();
+  drawSnGraph();
+}
+
+function updateSignalBadge() {
+  const badge = $('#sn-signal-badge');
+  if (!badge) return;
+  const latest = snHistory[snHistory.length - 1];
+  const hasSignal = Boolean(latest) && latest.sn > NO_SIGNAL_SN;
+  badge.className = `health-badge ${hasSignal ? 'online' : 'offline'}`;
+  badge.innerHTML = `<span class="status-dot ${hasSignal ? 'good' : 'bad'}"></span>${hasSignal ? 'SIGNAL' : 'NO SIGNAL'}`;
+}
+
+function drawSnGraph() {
+  const canvas = $('#sn-graph');
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const displayWidth = canvas.clientWidth || canvas.parentElement.clientWidth || 300;
+  const displayHeight = 90;
+  canvas.width = displayWidth * dpr;
+  canvas.height = displayHeight * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, displayWidth, displayHeight);
+
+  if (!snHistory.length) {
+    ctx.fillStyle = '#99a19c';
+    ctx.font = '11px "DM Mono", monospace';
+    ctx.fillText('No S/N samples in this window yet.', 8, displayHeight / 2);
+    return;
+  }
+
+  const padding = 8;
+  const plotWidth = displayWidth - padding * 2;
+  const plotHeight = displayHeight - padding * 2;
+  const values = snHistory.map((point) => point.sn);
+  const minValue = Math.min(...values, NO_SIGNAL_SN);
+  const maxValue = Math.max(...values, NO_SIGNAL_SN + 1);
+  const valueRange = maxValue - minValue || 1;
+  const minTime = snHistory[0].t;
+  const maxTime = snHistory[snHistory.length - 1].t;
+  const timeRange = (maxTime - minTime) || 1;
+  const xFor = (t) => padding + ((t - minTime) / timeRange) * plotWidth;
+  const yFor = (sn) => padding + plotHeight - ((sn - minValue) / valueRange) * plotHeight;
+
+  ctx.strokeStyle = '#e4e8e1';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 3; i += 1) {
+    const y = padding + (plotHeight / 3) * i;
+    ctx.beginPath();
+    ctx.moveTo(padding, y);
+    ctx.lineTo(displayWidth - padding, y);
+    ctx.stroke();
+  }
+
+  // Dashed reference line marking the "no signal" floor.
+  ctx.save();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = '#c65d2e';
+  ctx.lineWidth = 1;
+  const floorY = yFor(NO_SIGNAL_SN);
+  ctx.beginPath();
+  ctx.moveTo(padding, floorY);
+  ctx.lineTo(displayWidth - padding, floorY);
+  ctx.stroke();
+  ctx.restore();
+
+  // Draw the trace as separate segments so "no signal" stretches (at/below the
+  // floor) are visually distinct from an actual weak-but-present S/N reading.
+  let segmentStart = 0;
+  for (let index = 1; index <= snHistory.length; index += 1) {
+    const previousNoSignal = snHistory[index - 1].sn <= NO_SIGNAL_SN;
+    const currentNoSignal = index < snHistory.length ? snHistory[index].sn <= NO_SIGNAL_SN : previousNoSignal;
+    if (index === snHistory.length || currentNoSignal !== previousNoSignal) {
+      ctx.strokeStyle = previousNoSignal ? '#b64035' : '#167b61';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = segmentStart; i <= index && i < snHistory.length; i += 1) {
+        const point = snHistory[i];
+        const x = xFor(point.t);
+        const y = yFor(point.sn);
+        if (i === segmentStart) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      segmentStart = index;
+    }
+  }
+
+  ctx.fillStyle = '#69736f';
+  ctx.font = '10px "DM Mono", monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(`max ${maxValue.toFixed(1)}`, displayWidth - padding, padding + 9);
+  ctx.fillText(`min ${minValue.toFixed(1)}`, displayWidth - padding, displayHeight - padding - 1);
+  ctx.textAlign = 'left';
 }
 
 function updateSuggestions(messages) {
@@ -207,6 +334,10 @@ $('#detail-backdrop').addEventListener('click', closeDetails);
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeDetails(); });
 $('#aprs-form').addEventListener('submit', (event) => submitForm(event, '/api/send/aprs', '#aprs-result'));
 $('#fldigi-form').addEventListener('submit', (event) => submitForm(event, '/api/send/fldigi', '#fldigi-result'));
+$('#sn-window').addEventListener('change', () => refreshSnHistory().catch(() => {}));
+$('#raw-squelch').addEventListener('input', () => syncRawSquelch($('#raw-squelch').value));
+$('#raw-squelch-number').addEventListener('input', () => syncRawSquelch($('#raw-squelch-number').value));
+window.addEventListener('resize', () => drawSnGraph());
 ['aprs-search', 'aprs-direction', 'aprs-sort', 'fldigi-search', 'fldigi-direction', 'fldigi-crc', 'fldigi-sort'].forEach((id) => {
   $(`#${id}`).addEventListener('input', renderLogs);
   $(`#${id}`).addEventListener('change', renderLogs);
@@ -220,3 +351,4 @@ setInterval(() => refreshHealth().catch(() => {
   $('#last-checked').textContent = `Last checked: ${new Date().toLocaleTimeString()} (error)`;
 }), 3000);
 setInterval(() => refreshMessages().catch(() => {}), 10000);
+setInterval(() => refreshSnHistory().catch(() => {}), 5000);

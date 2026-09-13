@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -62,8 +63,13 @@ def _build_handler(relay):
             return json.loads(self.rfile.read(length) or b"{}")
 
         def do_GET(self):
-            if self.path == "/health":
+            parsed = urllib.parse.urlsplit(self.path)
+            if parsed.path == "/health":
                 self._send_json(200, relay.health_snapshot())
+            elif parsed.path == "/sn_history":
+                window = urllib.parse.parse_qs(parsed.query).get("window", [None])[0]
+                window_seconds = float(window) if window else None
+                self._send_json(200, relay.sn_history_snapshot(window_seconds))
             else:
                 self._send_json(404, {"error": "not found"})
 
@@ -126,6 +132,10 @@ class RelayControlClient:
 
     def health(self):
         return self._request("GET", "/health")
+
+    def sn_history(self, window_seconds=None):
+        path = "/sn_history" if not window_seconds else f"/sn_history?window={window_seconds}"
+        return self._request("GET", path)
 
     def send_aprs(self, destination, message, message_id=None):
         return self._request("POST", "/send/aprs", {

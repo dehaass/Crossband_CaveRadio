@@ -18,7 +18,27 @@
   <main class="shell log-viewer-shell">
     <section class="panel log-panel">
       <div class="panel-head"><div><p class="eyebrow">PERSISTED JSONL</p><h2>Application activity</h2></div><div class="panel-status"><span class="table-count" id="log-count">0 records</span><button class="icon-button" id="refresh-button" title="Refresh system logs" aria-label="Refresh system logs">↻</button></div></div>
-      <div class="table-tools log-viewer-tools"><input id="log-search" type="search" placeholder="Search log messages"><select id="log-level"><option value="">All levels</option><option value="DEBUG">DEBUG</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option><option value="CRITICAL">CRITICAL</option></select><select id="log-source"><option value="">All sources</option></select></div>
+      <div class="log-clock-bar"><span class="eyebrow">System time</span><span class="live-clock" id="live-clock">--:--:--</span></div>
+      <div class="table-tools log-viewer-tools">
+        <input id="log-search" type="search" placeholder="Search log messages">
+        <div class="log-level-filters" id="log-level-filters">
+          <label><input type="checkbox" value="DEBUG" checked>Debug</label>
+          <label><input type="checkbox" value="INFO" checked>Info</label>
+          <label><input type="checkbox" value="WARNING" checked>Warning</label>
+          <label><input type="checkbox" value="ERROR" checked>Error</label>
+          <label><input type="checkbox" value="CRITICAL" checked>Critical</label>
+        </div>
+        <select id="log-source"><option value="">All sources</option></select>
+        <select id="log-since">
+          <option value="">All time</option>
+          <option value="300000">Last 5 min</option>
+          <option value="600000">Last 10 min</option>
+          <option value="1800000">Last 30 min</option>
+          <option value="3600000">Last 1 hr</option>
+          <option value="21600000">Last 6 hr</option>
+          <option value="86400000">Last 24 hr</option>
+        </select>
+      </div>
       <div class="log-table-wrap log-viewer-table"><table><thead><tr><th>Timestamp</th><th>Level</th><th>Source</th><th>Message</th></tr></thead><tbody id="log-body"><tr><td colspan="4" class="empty">Loading system logs...</td></tr></tbody></table></div>
     </section>
   </main>

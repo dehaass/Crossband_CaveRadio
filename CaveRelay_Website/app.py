@@ -48,6 +48,9 @@ def configure_operations_logging():
     handler.setFormatter(JsonLogFormatter())
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.INFO)
+    # Werkzeug logs every request at INFO (including the dashboard's own polling),
+    # which drowns out real relay activity; only keep its warnings/errors.
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 
 def read_operations_log(limit=500, level=None, source=None):
@@ -135,6 +138,25 @@ def health():
         return jsonify(relay_client.health())
     except ConnectionError as error:
         return jsonify({"error": str(error)}), 503
+
+
+@app.get("/api/sn_history")
+def sn_history():
+    try:
+        window_seconds = float(request.args["window"]) if "window" in request.args else None
+    except ValueError:
+        window_seconds = None
+    try:
+        return jsonify(relay_client.sn_history(window_seconds))
+    except ConnectionError as error:
+        return jsonify({"error": str(error)}), 503
+
+
+@app.get("/api/time")
+def server_time():
+    """Server clock, in the same tz/format as log timestamps, for the dashboard's live clock."""
+    now = datetime.now().astimezone()
+    return jsonify({"time": now.isoformat(timespec="seconds"), "epoch_ms": now.timestamp() * 1000})
 
 
 @app.post("/api/send/aprs")
