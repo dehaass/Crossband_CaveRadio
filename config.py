@@ -35,7 +35,8 @@ class Settings:
     fldigi_executable: str = "fldigi"
     fldigi_headless: bool = False  # when True, run under xvfb-run; required when there is no DISPLAY (e.g. Raspberry Pi over SSH)
     fldigi_display: str = ":0"  # X display to use when fldigi_headless is False and launching over SSH
-    fldigi_start_args = None
+    fldigi_start_args: list = None
+    # fldigi_config_path: str = None
     # fldigi_start_args: list = field(default_factory=lambda: ["-display", ":99"])
     fldigi_config_path: str = os.path.join(PROJECT_ROOT, "modemConfigFiles/.fldigi/")
 

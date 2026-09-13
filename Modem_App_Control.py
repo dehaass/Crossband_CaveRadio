@@ -58,6 +58,19 @@ class FldigiController:
         else:
             # An SSH session has no DISPLAY of its own; point at the Pi's local X server instead.
             env["DISPLAY"] = settings.fldigi_display
+        # Audio device enumeration (PortAudio/ALSA/Pulse) depends on this subset of the
+        # environment; log it to compare against an interactive terminal launch if the
+        # soundcard list ever differs between the two.
+        log.info(
+            "Launching fldigi as uid=%s with XDG_RUNTIME_DIR=%s PULSE_SERVER=%s "
+            "DBUS_SESSION_BUS_ADDRESS=%s DISPLAY=%s HOME=%s",
+            os.getuid(),
+            env.get("XDG_RUNTIME_DIR"),
+            env.get("PULSE_SERVER"),
+            env.get("DBUS_SESSION_BUS_ADDRESS"),
+            env.get("DISPLAY"),
+            env.get("HOME"),
+        )
         self._app_monitor.process = subprocess.Popen(args, env=env)
 
         start = time.time()
