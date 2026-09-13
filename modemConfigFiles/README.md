@@ -1,0 +1,1 @@
+# Put your direwold.conf file and .fldigi/ folder containing the fldigi configuration files here. 

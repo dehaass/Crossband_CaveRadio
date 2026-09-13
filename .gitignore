@@ -1,5 +1,9 @@
-messages.jsonl
+# Ignore modem configuration files but include the folder and README.md so the user knows what to put in the folder.
 modemConfigFiles/*
+!modemConfigFiles/
+!modemConfigFiles/README.md
+
+messages.jsonl
 logs/*
 __pycache__/*
 *.pyc
