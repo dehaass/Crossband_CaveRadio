@@ -10,6 +10,7 @@ elsewhere.
 import logging
 import os
 import signal
+import socket
 import subprocess
 import time
 
@@ -19,6 +20,7 @@ from config import settings
 
 FLDIGI_START_TIMEOUT_SECONDS = 10
 FLDIGI_STOP_TIMEOUT_SECONDS = 5
+DIREWOLF_START_TIMEOUT_SECONDS = 10
 DIREWOLF_STOP_TIMEOUT_SECONDS = 5
 
 log = logging.getLogger("Modem_App_Control")
@@ -125,10 +127,30 @@ class DirewolfController:
         args = [settings.direwolf_executable, "-c", settings.direwolf_config_path]
         log.info("Starting direwolf: %s", " ".join(args))
         self._process = subprocess.Popen(args)
+        self._wait_until_ready()
         return self._process
+
+    def _wait_until_ready(self):
+        """Block until direwolf's KISS TCP port accepts connections, or timeout."""
+        start = time.time()
+        while True:
+            try:
+                with socket.create_connection((settings.kiss_hostname, settings.kiss_port), timeout=1):
+                    return
+            except OSError:
+                pass
+            if time.time() - start >= DIREWOLF_START_TIMEOUT_SECONDS:
+                log.warning("Timed out waiting for direwolf to open its KISS port")
+                return
+            time.sleep(0.5)
 
     def is_running(self):
         return self._process is not None and self._process.poll() is None
+
+    def restart(self):
+        """Stop and relaunch direwolf."""
+        self.stop()
+        return self.start()
 
     def stop(self, timeout=DIREWOLF_STOP_TIMEOUT_SECONDS):
         """Gracefully stop direwolf with SIGTERM, escalating to SIGKILL if needed."""

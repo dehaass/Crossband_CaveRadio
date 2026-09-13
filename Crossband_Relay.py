@@ -15,7 +15,7 @@ from aprs_relay import AprsService
 from config import settings
 
 
-from Modem_App_Control import FldigiController
+from Modem_App_Control import DirewolfController, FldigiController
 from QDX_Fldigi_coms import FldigiReceiver, format_radiomsg
 from radiomsg import expected_checksum
 
@@ -73,6 +73,7 @@ class CrossbandRelay:
         self._fldigi_transmitting = False
         self._fldigi_controller = FldigiController()
         self._fldigi_receiver = None
+        self._direwolf_controller = DirewolfController()
         self._aprs = AprsService(
             source=SOURCE_CALLSIGN,
             host=KISS_HOSTNAME,
@@ -84,6 +85,8 @@ class CrossbandRelay:
 
     def start(self):
         self._stop_event.clear()
+        self.log.info("Starting Dire Wolf")
+        self._direwolf_controller.start()
         self.log.info("Starting APRS service")
         self._aprs.start()
 
@@ -117,10 +120,12 @@ class CrossbandRelay:
                 fldigi["last_error"] = str(error)
         else:
             fldigi["healthy"] = False
+        aprs = self._aprs.health_snapshot()
+        aprs["process_running"] = self._direwolf_controller.is_running()
         return {
             "healthy": fldigi["healthy"] and self._aprs.connected and self._aprs.running,
             "fldigi": fldigi,
-            "aprs": self._aprs.health_snapshot(),
+            "aprs": aprs,
         }
 
     def power_cycle(self, subsystem):
@@ -151,9 +156,11 @@ class CrossbandRelay:
                 self._restart_fldigi()
 
     def _restart_aprs(self):
-        self.log.warning("Restarting APRS KISS connection")
+        self.log.warning("Restarting APRS")
         try:
             self._aprs.stop()
+            if not self._direwolf_controller.is_running():
+                self._direwolf_controller.restart()
             self._aprs.start()
         except (OSError, RuntimeError) as error:
             self.log.error("Unable to restart APRS: %s", error)
@@ -186,6 +193,7 @@ class CrossbandRelay:
     def stop(self):
         self._stop_event.set()
         self._aprs.stop()
+        self._direwolf_controller.stop()
         if self._fldigi_receiver is not None:
             self._fldigi_controller.stop()
             self._fldigi_receiver = None
