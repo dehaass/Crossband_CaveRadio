@@ -30,6 +30,7 @@ class Settings:
     fldigi_port: int = 7362
     fldigi_modem: str = "THOR4"
     fldigi_frequency_hz: int = secrets.fldigi_frequency_hz  # see config_secrets.py
+    fldigi_sideband: str = "USB"  # e.g., "USB" or "LSB" NOT IMPLEMENTED YET
     fldigi_cursor_position: int = 1400  # initial cursor position in fldigi GUI
     fldigi_squelch: float = 20.0  # squelch_level (0-100); squelch is enabled automatically when > 0
     fldigi_executable: str = "fldigi"
@@ -45,6 +46,10 @@ class Settings:
     kiss_port: int = 8001
     direwolf_executable: str = "direwolf"
     direwolf_config_path: str = os.path.join(PROJECT_ROOT, "modemConfigFiles/direwolf.conf")
+
+    # --- Soundcard detection (checked with `arecord -l` before starting each modem) ---
+    fldigi_soundcard_name: str = "UNIT 2"  # QDX radio's ALSA capture device name
+    direwolf_soundcard_name: str = "USB PnP Sound Device"  # USB sound card (e.g. digirig) name
 
     # --- Relay timing/behaviour ---
     poll_interval_seconds: float = 0.5

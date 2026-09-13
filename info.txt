@@ -1,5 +1,21 @@
-# See current audio input level:
+# Some useful linux commands for setup and testing of soundcards / modems
+
+# List playback devices:
+aplay -l
+# List recording devices:
+arecord -l
+
+# Find USB serial port devices e.g. digirig PTT control
+ls -l /dev/serial/by-id/
+
+
+# See current audio input level on Card 3 with 16bits:
 arecord -D hw:3,0 -f S16_LE -vv /dev/null
+
+# Configure audio levels, automatic gain control, and muting with:
+alsamixer
+and/or
+pavucontrol
 
 # Start fldigi 'headless'. Unsure if this is actually better.
 xvfb-run fldigi -display :99
@@ -9,3 +25,4 @@ ADEVICE plughw:3,0
 CHANNEL 0
 MYCALL VE6LF
 PPT /dev/ttyUSB0 RTS
+

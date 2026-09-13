@@ -218,6 +218,8 @@ def main():
 
     log.info('Connecting to Fldigi at %s:%d', FLDIGI_HOSTNAME, FLDIGI_PORT)
     client = pyfldigi.Client(hostname=FLDIGI_HOSTNAME, port=FLDIGI_PORT)
+    # SDH - Take control of the rig to allow frequency changes from this client.
+    # client.rig.take_control()
 
     log.info('Fldigi version: %s', client.name)
 

@@ -70,6 +70,7 @@ class CrossbandRelay:
         self._stop_event = threading.Event()
         self._monitor_thread = None
         self._fldigi_last_error = None
+        self._direwolf_last_error = None
         self._power_cycle_hook = power_cycle_hook
         self._fldigi_transmitting = False
         self._fldigi_controller = FldigiController()
@@ -87,14 +88,23 @@ class CrossbandRelay:
     def start(self):
         self._stop_event.clear()
         self.log.info("Starting Dire Wolf")
-        self._direwolf_controller.start()
+        try:
+            self._direwolf_controller.start()
+            self._direwolf_last_error = None
+        except RuntimeError as error:
+            self._direwolf_last_error = str(error)
+            self.log.error("Dire Wolf did not start: %s", error)
         self.log.info("Starting APRS service")
         self._aprs.start()
 
         self.log.info("Starting Fldigi")
-        client = self._fldigi_controller.start(headless=settings.fldigi_headless)
-        self._fldigi_receiver = FldigiReceiver(client)
-        self._fldigi_last_error = None
+        try:
+            client = self._fldigi_controller.start(headless=settings.fldigi_headless)
+            self._fldigi_receiver = FldigiReceiver(client)
+            self._fldigi_last_error = None
+        except RuntimeError as error:
+            self._fldigi_last_error = str(error)
+            self.log.error("Fldigi did not start: %s", error)
         if self._monitor_thread is None or not self._monitor_thread.is_alive():
             self._monitor_thread = threading.Thread(
                 target=self._health_monitor_loop,
@@ -123,6 +133,7 @@ class CrossbandRelay:
             fldigi["healthy"] = False
         aprs = self._aprs.health_snapshot()
         aprs["process_running"] = self._direwolf_controller.is_running()
+        aprs["direwolf_error"] = self._direwolf_last_error
         return {
             "healthy": fldigi["healthy"] and self._aprs.connected and self._aprs.running,
             "fldigi": fldigi,
@@ -204,8 +215,10 @@ class CrossbandRelay:
             self._aprs.stop()
             if not self._direwolf_controller.is_running():
                 self._direwolf_controller.restart()
+            self._direwolf_last_error = None
             self._aprs.start()
         except (OSError, RuntimeError) as error:
+            self._direwolf_last_error = str(error)
             self.log.error("Unable to restart APRS: %s", error)
 
     def _restart_fldigi(self):

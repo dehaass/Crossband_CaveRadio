@@ -39,7 +39,7 @@ async function refreshHealth() {
   latestRawChunks = health.fldigi?.raw_chunks || [];
   renderRawPreview();
   $('#aprs-status').textContent = aprsOk ? 'READY' : 'OFFLINE';
-  $('#aprs-detail').textContent = aprsOk ? `${health.aprs.host}:${health.aprs.port}` : (health.aprs.last_error || 'KISS TCP status');
+  $('#aprs-detail').textContent = aprsOk ? `${health.aprs.host}:${health.aprs.port}` : (health.aprs.direwolf_error || health.aprs.last_error || 'KISS TCP status');
   $('#last-checked').textContent = `Last checked: ${new Date().toLocaleTimeString()}`;
 }
 

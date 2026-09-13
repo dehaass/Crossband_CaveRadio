@@ -17,6 +17,7 @@ import time
 import pyfldigi
 
 from config import settings
+from soundcard_check import require_soundcard
 
 FLDIGI_START_TIMEOUT_SECONDS = 10
 FLDIGI_STOP_TIMEOUT_SECONDS = 5
@@ -37,6 +38,7 @@ class FldigiController:
 
     def start(self, headless=True):
         """Launch fldigi and apply the configured modem/frequency/squelch settings."""
+        require_soundcard(settings.fldigi_soundcard_name, "fldigi")
         log.info("Starting fldigi (headless=%s)", headless)
         self._launch(headless=headless)
         self.client = pyfldigi.Client(hostname=settings.fldigi_hostname, port=settings.fldigi_port)
@@ -137,7 +139,8 @@ class DirewolfController:
         if self.is_running():
             log.warning("direwolf is already running")
             return self._process
-        args = [settings.direwolf_executable, "-c", settings.direwolf_config_path]
+        require_soundcard(settings.direwolf_soundcard_name, "direwolf")
+        args = [settings.direwolf_executable, "-c", settings.direwolf_config_path, "-t", "0"] # -t 5 keeps terminal background colour as-is
         log.info("Starting direwolf: %s", " ".join(args))
         self._process = subprocess.Popen(args)
         self._wait_until_ready()
